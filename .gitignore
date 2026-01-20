@@ -35,7 +35,12 @@ ENV/
 .DS_Store
 
 # 模型文件（太大，不应上传，使用占位文件）
-backtend/models/
+# 但允许 README.txt 和 .gitkeep 文件
+backtend/models/**/*
+!backtend/models/
+!backtend/models/**/*.txt
+!backtend/models/**/*.gitkeep
+!backtend/models/**/.gitkeep
 Model/
 
 # 日志文件
