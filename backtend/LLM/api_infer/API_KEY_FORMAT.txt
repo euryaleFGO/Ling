@@ -1,0 +1,62 @@
+API 密钥配置说明
+================
+
+此文件说明如何配置 API 密钥。
+
+配置文件位置：
+-------------
+backtend/LLM/api_infer/config.py
+
+配置方式：
+---------
+
+方式1：使用环境变量（推荐）
+---------------------------
+创建 .env 文件在项目根目录，内容如下：
+
+DEEPSEEK_API_KEY=your-deepseek-api-key-here
+BASE_URL=https://api.deepseek.com/v1
+MODEL=deepseek-chat
+
+或者在系统环境变量中设置：
+- Windows: set DEEPSEEK_API_KEY=your-api-key
+- Linux/Mac: export DEEPSEEK_API_KEY=your-api-key
+
+方式2：直接在代码中设置（不推荐，仅用于测试）
+---------------------------------------------
+修改 config.py 文件，直接赋值：
+
+DEEPSEEK_API_KEY = "your-deepseek-api-key-here"
+BASE_URL = "https://api.deepseek.com/v1"
+MODEL = "deepseek-chat"
+
+API 密钥获取：
+-------------
+1. 访问 DeepSeek 官网：https://www.deepseek.com/
+2. 注册账号并登录
+3. 进入 API 管理页面
+4. 创建新的 API 密钥
+5. 复制密钥并配置到环境变量或 .env 文件中
+
+注意事项：
+---------
+⚠️ 重要：不要将包含真实 API 密钥的 .env 文件提交到 Git 仓库！
+⚠️ 如果意外提交了密钥，请立即在 DeepSeek 控制台撤销该密钥并生成新密钥。
+
+配置示例：
+---------
+.env 文件格式：
+
+DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+BASE_URL=https://api.deepseek.com/v1
+MODEL=deepseek-chat
+
+环境变量格式（Windows CMD）：
+set DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+set BASE_URL=https://api.deepseek.com/v1
+set MODEL=deepseek-chat
+
+环境变量格式（Linux/Mac）：
+export DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+export BASE_URL=https://api.deepseek.com/v1
+export MODEL=deepseek-chat

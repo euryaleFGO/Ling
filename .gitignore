@@ -1,0 +1,85 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 虚拟环境
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 模型文件（太大，不应上传，使用占位文件）
+backtend/models/
+Model/
+
+# 日志文件
+logs/
+*.log
+
+# 数据库文件
+backtend/LLM/chroma_data/
+*.sqlite3
+*.db
+
+# 生成的音频文件
+audio_output/
+*.wav
+*.mp3
+*.ogg
+
+# 环境变量文件
+.env
+.env.local
+.env.*.local
+
+# 编译文件
+frontend/Live2DPet/target/
+*.class
+
+# 个人数据（可选，如果不想上传）
+data/screenshots/
+data/txt/
+
+# 临时文件
+query
+0.5.0
+*.docx
+*.tmp
+
+# 系统文件
+Thumbs.db
+.DS_Store
+
+# 测试输出
+test_output/
+*.test
+
+# Git
+.git/
+.gitignore.bak
