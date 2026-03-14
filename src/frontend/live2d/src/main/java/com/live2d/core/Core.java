@@ -386,6 +386,76 @@ public class Core {
         return ordersPtr.getIntArray(0, count);
     }
     
+    /**
+     * 获取 Drawable 的透明度（需在 update() 之后调用，Core 根据参数计算）
+     */
+    public float getDrawableOpacity(int drawableIndex) {
+        if (!initialized || model == null) return 1.0f;
+        int count = getDrawableCount();
+        if (drawableIndex < 0 || drawableIndex >= count) return 1.0f;
+        Pointer opacitiesPtr = CubismCore.INSTANCE.csmGetDrawableOpacities(model);
+        if (opacitiesPtr == null) return 1.0f;
+        return opacitiesPtr.getFloat(drawableIndex * 4);
+    }
+    
+    /**
+     * 获取 Drawable 所属 Part 的索引（用于乘以 Part 透明度）
+     * 若为 -1 表示无父 Part
+     */
+    public int getDrawableParentPartIndex(int drawableIndex) {
+        if (!initialized || model == null) return -1;
+        int count = getDrawableCount();
+        if (drawableIndex < 0 || drawableIndex >= count) return -1;
+        Pointer indicesPtr = CubismCore.INSTANCE.csmGetDrawableParentPartIndices(model);
+        if (indicesPtr == null) return -1;
+        return indicesPtr.getInt(drawableIndex * 4);
+    }
+    
+    /**
+     * 按 Part 索引获取 Part 透明度
+     */
+    public float getPartOpacity(int partIndex) {
+        if (!initialized || model == null || partIndex < 0) return 1.0f;
+        int count = getPartCount();
+        if (partIndex >= count) return 1.0f;
+        Pointer opacitiesPtr = CubismCore.INSTANCE.csmGetPartOpacities(model);
+        if (opacitiesPtr == null) return 1.0f;
+        return opacitiesPtr.getFloat(partIndex * 4);
+    }
+    
+    /**
+     * 获取 Drawable 使用的 Mask 数量
+     */
+    public int getDrawableMaskCount(int drawableIndex) {
+        if (!initialized || model == null) return 0;
+        int count = getDrawableCount();
+        if (drawableIndex < 0 || drawableIndex >= count) return 0;
+        Pointer countsPtr = CubismCore.INSTANCE.csmGetDrawableMaskCounts(model);
+        if (countsPtr == null) return 0;
+        return countsPtr.getInt(drawableIndex * 4);
+    }
+    
+    /**
+     * 获取 Drawable 使用的 Mask Drawable 索引列表。
+     * masks[i] 为第 i 个 Mask，对应作为遮罩的 Drawable 索引。
+     */
+    public int[] getDrawableMasks(int drawableIndex) {
+        if (!initialized || model == null) return new int[0];
+        int count = getDrawableCount();
+        if (drawableIndex < 0 || drawableIndex >= count) return new int[0];
+        int maskCount = getDrawableMaskCount(drawableIndex);
+        if (maskCount <= 0) return new int[0];
+        Pointer masksPtr = CubismCore.INSTANCE.csmGetDrawableMasks(model);
+        if (masksPtr == null) return new int[0];
+        Pointer drawableMasksPtr = masksPtr.getPointer(drawableIndex * Native.POINTER_SIZE);
+        if (drawableMasksPtr == null) return new int[0];
+        int[] result = new int[maskCount];
+        for (int i = 0; i < maskCount; i++) {
+            result[i] = drawableMasksPtr.getInt(i * 4);
+        }
+        return result;
+    }
+    
     public boolean isInitialized() {
         return initialized;
     }

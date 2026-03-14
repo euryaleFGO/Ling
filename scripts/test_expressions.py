@@ -1,12 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-表情测试工具
+Live2D 角色表情测试工具
+
+测试 ExpressionController 的 9 种情绪 + 嘴型(RMS) + Viseme 口型。
+
 自动检测运行模式:
-  - 主项目已运行 → 作为客户端连入已有的 WebSocket 服务器
-  - 主项目未运行 → 自己启动 WebSocket 服务器 + 手动启动 Java 前端
+  - 主项目已运行 (main.py/launcher) → 作为客户端连入已有 WebSocket (端口 8765)
+  - 主项目未运行 → 本脚本启动 WebSocket 服务器，需手动启动 Java Live2D 前端
 
 使用方法:
+  # 交互模式（推荐）
   python scripts/test_expressions.py
+
+  # 非交互模式：自动轮播所有表情后退出
+  python scripts/test_expressions.py --auto
+
+前置条件:
+  1. pip install websockets
+  2. Java Live2D 前端已启动并连接到 ws://localhost:8765
 """
 
 import asyncio
@@ -158,6 +169,11 @@ def send_rms(rms: float):
     send({"type": "audio_rms", "rms": rms})
 
 
+def send_viseme(openY: float, form: float):
+    """发送 Viseme 口型（Rhubarb Lip Sync 格式）"""
+    send({"type": "viseme", "openY": openY, "form": form})
+
+
 def print_menu():
     if _mode == "client":
         status = "✅ 客户端已连接到主项目"
@@ -172,7 +188,8 @@ def print_menu():
     for i, (key, label) in enumerate(EMOTIONS):
         print(f"  {i + 1}. {label}  ({key})")
     print("-" * 50)
-    print("  m. 测试嘴型（发送 RMS 脉冲）")
+    print("  m. 测试嘴型（RMS 脉冲）")
+    print("  v. 测试 Viseme 口型（开合 + 形状）")
     print("  a. 自动轮播所有表情（每个 3 秒）")
     print("  0 / q. 退出")
     print("=" * 50)
@@ -190,6 +207,20 @@ def test_mouth():
     print("  → 嘴型测试完成")
 
 
+def test_viseme():
+    """发送 Viseme 口型序列（开合 + 嘴型形状）"""
+    print("  → Viseme 口型测试 4 秒...")
+    # 模拟说话：开合 + 嘴型变化
+    for i in range(80):  # 4秒, 50ms/帧
+        t = i / 20.0
+        openY = 0.3 + 0.4 * abs(math.sin(t * 6))  # 嘴开合 0.3~0.7
+        form = math.sin(t * 3) * 0.5  # 嘴型 -0.5~0.5
+        send_viseme(openY, form)
+        time.sleep(0.05)
+    send_viseme(0.0, 0.0)
+    print("  → Viseme 测试完成")
+
+
 def auto_cycle():
     """自动轮播所有表情"""
     print("\n  自动轮播开始（每个表情 3 秒）...")
@@ -205,6 +236,8 @@ def auto_cycle():
 
 def main():
     global _mode
+
+    auto_mode = "--auto" in sys.argv or "-a" in sys.argv
 
     if is_port_in_use(PORT):
         # 主项目已在运行，以客户端模式连接
@@ -229,6 +262,14 @@ def main():
             print("服务器启动失败，退出。")
             return
 
+    if auto_mode:
+        print("\n  [--auto] 自动轮播模式...")
+        time.sleep(1.5)  # 等待 Java 可能正在连接
+        auto_cycle()
+        send_emotion("neutral")
+        print("测试完成，已退出。")
+        return
+
     try:
         while True:
             print_menu()
@@ -240,6 +281,8 @@ def main():
                 break
             elif choice == "m":
                 test_mouth()
+            elif choice == "v":
+                test_viseme()
             elif choice == "a":
                 auto_cycle()
             elif choice.isdigit():
