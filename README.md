@@ -88,7 +88,7 @@
 ┌─────────▼──────────────────────▼─────────────────────────────┐
 │                     应用核心层                                 │
 │  ┌──────────────────────────────────────────────────────┐   │
-│  │              LLM 模块 (backtend/LLM/)                │   │
+│  │              LLM 模块 (src/backend/llm/)              │   │
 │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐          │   │
 │  │  │  Agent   │  │  Memory  │  │  Tools   │          │   │
 │  │  │  智能代理 │  │ 记忆管理  │  │ 工具调用  │          │   │
@@ -102,7 +102,7 @@
 │  └──────────────────────────────────────────────────────┘   │
 │                                                               │
 │  ┌──────────────────────────────────────────────────────┐   │
-│  │          TTS 模块 (backtend/TTS/Local/tts/)          │   │
+│  │          TTS 模块 (src/backend/tts/)                  │   │
 │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐          │   │
 │  │  │ CosyVoice│  │  Engine  │  │  音频    │          │   │
 │  │  │   模型   │  │  引擎    │  │  生成    │          │   │
@@ -128,7 +128,7 @@
 
 ### 消息流程
 
-1. **用户输入** → `send_user_message.py` 发送消息到 `message_server.py`
+1. **用户输入** → `scripts/send_message.py` 发送消息到 `message_server.py`
 2. **LLM 处理** → `Agent` 调用 DeepSeek API 生成回复
 3. **消息传递** → AI 回复通过 `message_server.py` 发送到队列
 4. **Live2D 显示** → Java 端轮询获取消息，显示在语音气泡中
@@ -173,6 +173,21 @@
 - `onnxruntime` - ONNX 模型推理
 - `modelscope` - 模型下载
 
+### TTS 运行模式（本地 / 云端 / 免费基础）
+
+`scripts/send_message.py` 支持通过环境变量切换 TTS Provider：
+
+- **本地 CosyVoice（默认）**：
+  - `TTS_MODE=local`
+  - 本机加载 `models/TTS/CosyVoice2-0.5B` 推理并播放
+- **云端 CosyVoice（队列 + 近似流式）**：
+  - `TTS_MODE=remote`
+  - `REMOTE_TTS_URL=http://<云端IP>:5001`
+  - 客户端先入队 `/tts/enqueue`，再按段出队 `/tts/dequeue` 播放，播完自动删除临时 wav
+- **免费基础 TTS（edge-tts，无需 key）**：
+  - `TTS_MODE=edge`
+  - 输出 mp3，播放完成自动删除（建议安装 `pygame`）
+
 #### 其他
 - `PyQt6` - GUI 界面
 - `requests` - HTTP 请求
@@ -184,60 +199,59 @@
 
 ```
 Liying/
-├── backtend/                      # 后端代码
-│   ├── LLM/                       # 大语言模型模块
-│   │   ├── agent/                 # 智能代理
-│   │   │   ├── agent.py           # Agent 核心类
-│   │   │   └── tool_manager.py    # 工具管理
-│   │   ├── api_infer/             # API 推理
-│   │   │   ├── openai_infer.py    # OpenAI 兼容 API
-│   │   │   └── config.py          # 配置文件
-│   │   ├── memory/                # 记忆管理
-│   │   │   ├── context_manager.py # 上下文管理
-│   │   │   ├── long_term_memory.py # 长期记忆
-│   │   │   └── memory_extractor.py # 记忆提取
-│   │   ├── database/              # 数据库
-│   │   │   ├── mongo_client.py    # MongoDB 客户端
-│   │   │   ├── chroma_client.py   # ChromaDB 客户端
-│   │   │   └── knowledge_dao.py   # 知识库 DAO
-│   │   └── tools/                 # 工具集合
-│   │       ├── search_tool.py     # 搜索工具
-│   │       ├── memory_tool.py     # 记忆工具
-│   │       └── ...
+├── src/                           # 源代码目录
+│   ├── core/                      # 核心模块
+│   │   ├── launcher.py            # 启动器（MongoDB + Live2D）
+│   │   └── message_server.py      # 消息服务器
 │   │
-│   ├── TTS/                       # 语音合成模块
-│   │   └── Local/                 # 本地 TTS
-│   │       └── tts/               # TTS 核心代码
-│   │           ├── cosyvoice/     # CosyVoice2 模型
-│   │           ├── engine/        # TTS 引擎
-│   │           │   └── tts_engine.py
-│   │           └── service.py     # TTS HTTP 服务
+│   ├── backend/                   # 后端模块
+│   │   ├── llm/                   # 大语言模型模块
+│   │   │   ├── agent/             # 智能代理
+│   │   │   │   ├── agent.py       # Agent 核心类
+│   │   │   │   └── tool_manager.py # 工具管理
+│   │   │   ├── api_infer/         # API 推理
+│   │   │   │   ├── openai_infer.py # OpenAI 兼容 API
+│   │   │   │   └── config.py      # 配置文件
+│   │   │   ├── memory/            # 记忆管理
+│   │   │   ├── database/          # 数据库
+│   │   │   └── tools/             # 工具集合
+│   │   │
+│   │   └── tts/                   # 语音合成模块
+│   │       ├── engine/            # TTS 引擎
+│   │       │   └── tts_engine.py
+│   │       ├── cosyvoice/         # CosyVoice2 模型
+│   │       └── third_party/       # 第三方依赖
 │   │
-│   └── models/                    # 模型文件
-│       ├── embedding/             # 嵌入模型
-│       └── TTS/                   # TTS 模型
-│           └── CosyVoice2-0.5B/
+│   ├── frontend/                  # 前端模块
+│   │   └── live2d/                # Live2D 桌面宠物
+│   │       ├── src/main/java/     # Java 源码
+│   │       ├── pom.xml            # Maven 配置
+│   │       └── README.md          # 说明文档
+│   │
+│   └── gui/                       # GUI 界面
+│       ├── main_window.py         # 主窗口
+│       └── pages/                 # 页面模块
 │
-├── frontend/                      # 前端代码
-│   └── Live2DPet/                 # Live2D 桌面宠物
-│       ├── src/main/java/         # Java 源码
-│       │   └── com/live2d/        # 核心类
-│       │       ├── Main.java      # 主程序
-│       │       ├── Live2DModel.java # 模型管理
-│       │       └── SpeechBubble.java # 语音气泡
-│       ├── pom.xml                # Maven 配置
-│       └── README.md              # 说明文档
+├── scripts/                       # 脚本目录
+│   ├── send_message.py           # 用户消息发送脚本
+│   ├── test_tts.py               # TTS 测试脚本
+│   └── install_dependencies.bat   # 依赖安装脚本
 │
-├── gui/                           # GUI 界面（可选）
-│   └── main_window.py             # 主窗口
+├── config/                        # 配置文件目录
+│   └── api_keys.example.txt       # API 密钥格式示例
 │
-├── launcher.py                    # 启动器（MongoDB + Live2D）
-├── message_server.py              # 消息服务器
-├── send_user_message.py           # 用户消息发送脚本
-├── test_tts.py                    # TTS 测试脚本
+├── models/                        # 模型文件目录
+│   ├── embedding/                 # 嵌入模型
+│   └── TTS/                       # TTS 模型
+│       └── CosyVoice2-0.5B/
 │
-├── install_tts_dependencies.bat   # TTS 依赖安装脚本
-├── install_tts_requirements.txt   # TTS 依赖列表
+├── tests/                         # 测试目录
+│   ├── test_llm/                 # LLM 测试
+│   └── test_tts/                 # TTS 测试
+│
+├── tools/                         # 工具脚本
+│   └── convert_readme_to_docx.py
+│
 └── README.md                      # 本文档
 ```
 
@@ -330,7 +344,7 @@ brew services start mongodb-community
 创建 `.env` 文件或设置环境变量：
 
 ```bash
-# backtend/LLM/api_infer/config.py 或环境变量
+# src/backend/llm/api_infer/config.py 或环境变量
 export DEEPSEEK_API_KEY="your-api-key-here"
 export BASE_URL="https://api.deepseek.com/v1"
 export MODEL="deepseek-chat"
@@ -343,7 +357,7 @@ export MODEL="deepseek-chat"
 ```python
 # 使用 ModelScope
 from modelscope import snapshot_download
-snapshot_download('iic/CosyVoice2-0.5B', local_dir='backtend/models/TTS/CosyVoice2-0.5B')
+snapshot_download('iic/CosyVoice2-0.5B', local_dir='models/TTS/CosyVoice2-0.5B')
 ```
 
 #### 参考音频
@@ -375,7 +389,30 @@ python message_server.py
 python launcher.py
 
 # 终端 3: 发送消息
-python send_user_message.py "你好"
+python scripts/send_message.py "你好"
+```
+
+### 启动云端 CosyVoice TTS 服务（可选）
+
+云端机器（或本机）单独启动 TTS 服务（默认端口 `5001`）：
+
+```bash
+conda run -p <你的env路径> python src/backend/tts/service.py
+```
+
+本地使用远端 TTS（队列/近似流式）：
+
+```bash
+set TTS_MODE=remote
+set REMOTE_TTS_URL=http://<云端IP>:5001
+python scripts/send_message.py "你好"
+```
+
+本地使用免费基础 TTS（edge-tts）：
+
+```bash
+set TTS_MODE=edge
+python scripts/send_message.py "你好"
 ```
 
 ### 8. 测试系统
@@ -385,7 +422,7 @@ python send_user_message.py "你好"
 python test_tts.py
 
 # 测试完整流程
-python send_user_message.py "你好，介绍一下你自己"
+python scripts/send_message.py "你好，介绍一下你自己"
 ```
 
 ---
@@ -394,7 +431,7 @@ python send_user_message.py "你好，介绍一下你自己"
 
 ### LLM 配置
 
-编辑 `backtend/LLM/api_infer/config.py`:
+编辑 `src/backend/llm/api_infer/config.py`:
 
 ```python
 DEEPSEEK_API_KEY = "your-api-key"
@@ -406,15 +443,15 @@ MODEL = "deepseek-chat"
 
 默认连接: `mongodb://localhost:27017/`
 
-如需修改，编辑 `backtend/LLM/database/mongo_client.py`
+如需修改，编辑 `src/backend/llm/database/mongo_client.py`
 
 ### TTS 配置
 
 #### 模型路径
 
-默认路径: `backtend/models/TTS/CosyVoice2-0.5B`
+默认路径: `models/TTS/CosyVoice2-0.5B`
 
-修改 `send_user_message.py` 中的 `get_tts_engine()` 函数
+修改 `scripts/send_message.py` 中的 `get_tts_engine()` 函数
 
 #### GPU 配置
 
@@ -463,10 +500,10 @@ python launcher.py
 
 ```bash
 # 方式 1: 命令行
-python send_user_message.py "你好"
+python scripts/send_message.py "你好"
 
 # 方式 2: 交互式
-python send_user_message.py
+python scripts/send_message.py
 # 然后输入消息
 ```
 
@@ -554,7 +591,7 @@ python test_tts.py
 python backtend/LLM/test_agent.py
 
 # 测试完整流程
-python send_user_message.py "测试消息"
+python scripts/send_message.py "测试消息"
 ```
 
 ### 扩展开发

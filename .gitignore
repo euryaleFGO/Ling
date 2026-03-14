@@ -34,13 +34,12 @@ ENV/
 *~
 .DS_Store
 
-# 模型文件（太大，不应上传，使用占位文件）
-# 但允许 README.txt 和 .gitkeep 文件
+# 模型文件（太大，不应上传）
+models/
+src/models/
+
+# 旧路径（兼容）
 backtend/models/**/*
-!backtend/models/
-!backtend/models/**/*.txt
-!backtend/models/**/*.gitkeep
-!backtend/models/**/.gitkeep
 Model/
 
 # 日志文件
@@ -48,7 +47,7 @@ logs/
 *.log
 
 # 数据库文件
-backtend/LLM/chroma_data/
+data/chroma_data/
 *.sqlite3
 *.db
 
@@ -71,6 +70,12 @@ frontend/Live2DPet/target/
 data/screenshots/
 data/txt/
 
+# 临时文件和旧文件
+mess/
+
+# 大体积压缩包（部署包自行下载）
+deploy/*.zip
+
 # 临时文件
 query
 0.5.0
@@ -84,6 +89,24 @@ Thumbs.db
 # 测试输出
 test_output/
 *.test
+
+# 根目录测试脚本（不上传）
+/test_*.py
+tempCodeRunnerFile.py
+test.txt
+debug*.png
+/temp/
+
+# 个人/内部文档（不上传）
+Live2D 表情互动项目研究.md
+OpenClaw_PPT大纲.md
+docs/
+
+# 私密配置（含 API Key）
+config/llm_profiles.json
+config/*_keys*.json
+config/*.json
+!config/api_keys.example.txt
 
 # Git
 .git/

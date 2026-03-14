@@ -1,0 +1,14 @@
+com\live2d\platform\WindowsTransparency$Dwmapi.class
+com\live2d\model\Model.class
+com\live2d\Main.class
+com\live2d\SpeechBubble$1.class
+com\live2d\core\Core.class
+com\live2d\platform\WindowsTransparency.class
+com\live2d\platform\WindowsTransparency$DWM_BLURBEHIND.class
+com\live2d\platform\WindowsTransparency$MARGINS.class
+com\live2d\ExpressionController.class
+com\live2d\core\CubismCore$csmVector2.class
+com\live2d\core\CubismCore.class
+com\live2d\SpeechBubble.class
+com\live2d\Utils.class
+com\live2d\platform\WindowsTransparency$User32Ex.class
