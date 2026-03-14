@@ -267,4 +267,9 @@ public class ExpressionController {
     public float getCurrentMouthOpen() {
         return currentMouthOpen;
     }
+
+    /** 当前情绪是否在控制眼睛开合（如 cry/surprise/fear），此时 Main 的自动眨眼应暂停 */
+    public boolean isEmotionControllingEyes() {
+        return emotionControlsEyes;
+    }
 }

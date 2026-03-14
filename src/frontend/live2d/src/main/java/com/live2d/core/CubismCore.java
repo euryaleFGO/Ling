@@ -61,6 +61,14 @@ public interface CubismCore extends Library {
     Pointer csmGetDrawableVertexUvs(Pointer model);
     Pointer csmGetDrawableIndexCounts(Pointer model);
     Pointer csmGetDrawableIndices(Pointer model);
+    /** Drawable 透明度（Core 每帧更新后计算） */
+    Pointer csmGetDrawableOpacities(Pointer model);
+    /** Drawable 所属 Part 的索引，用于乘以 Part 透明度 */
+    Pointer csmGetDrawableParentPartIndices(Pointer model);
+    /** 每个 Drawable 使用的 Mask 数量，int[drawableCount] */
+    Pointer csmGetDrawableMaskCounts(Pointer model);
+    /** 每个 Drawable 的 Mask 列表，Pointer[]，masks[i] 指向 int[maskCounts[i]] 为 Mask 的 Drawable 索引 */
+    Pointer csmGetDrawableMasks(Pointer model);
     
     void csmResetDrawableDynamicFlags(Pointer model);
 }
