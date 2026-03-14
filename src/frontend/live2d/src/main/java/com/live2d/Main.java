@@ -39,7 +39,10 @@ public class Main {
     private int[] vaos;
     private int[] vboVertices;
     private int[] vboUvs;
+    private int[] vboModelPos;
     private int[] ebos;
+    
+    private CubismClippingManager clippingManager;
     
     private float canvasWidth;
     private float canvasHeight;
@@ -53,10 +56,19 @@ public class Main {
     private float offsetY = 0.0f;
     
     private double startTime;
-    private double lastBlinkTime;
     private double nextBlinkTime;
-    private boolean isBlinking = false;
     private double blinkStartTime;
+    private int blinkPhase = 0;  // 0=idle, 1=closing, 2=opening (AIRI 风格)
+    private float blinkStartLeft = 1.0f;
+    private float blinkStartRight = 1.0f;
+
+    // 眼跳 (Eye Saccade，参考 AIRI)
+    private double lastMouseMoveTime = 0.0;
+    private double nextSaccadeAt = 0.0;
+    private float targetEyeBallX = 0.0f;
+    private float targetEyeBallY = 0.0f;
+    private float currentEyeBallX = 0.0f;
+    private float currentEyeBallY = 0.0f;
     
     private double mouseX = 0.0;
     private double mouseY = 0.0;
@@ -84,23 +96,39 @@ public class Main {
         #version 330 core
         layout (location = 0) in vec2 position;
         layout (location = 1) in vec2 texCoord;
+        layout (location = 2) in vec2 modelPos;
         out vec2 TexCoord;
+        out vec2 ModelPos;
         uniform mat4 projection;
         void main() {
             gl_Position = projection * vec4(position, 0.0, 1.0);
             TexCoord = texCoord;
+            ModelPos = modelPos;
         }
         """;
     
     private static final String FRAGMENT_SHADER = """
         #version 330 core
         in vec2 TexCoord;
+        in vec2 ModelPos;
         out vec4 FragColor;
         uniform sampler2D texture0;
+        uniform sampler2D maskTexture;
         uniform float alpha;
+        uniform int useMask;
+        uniform vec4 maskLayout;
+        uniform vec4 modelBounds;
         void main() {
             vec4 texColor = texture(texture0, TexCoord);
-            FragColor = vec4(texColor.rgb, texColor.a * alpha);
+            float maskVal = 1.0;
+            if (useMask != 0 && modelBounds.z > modelBounds.x && modelBounds.w > modelBounds.y) {
+                vec2 uv = vec2(
+                    maskLayout.x + (ModelPos.x - modelBounds.x) / (modelBounds.z - modelBounds.x) * maskLayout.z,
+                    maskLayout.y + (ModelPos.y - modelBounds.y) / (modelBounds.w - modelBounds.y) * maskLayout.w
+                );
+                maskVal = texture(maskTexture, uv).a;
+            }
+            FragColor = vec4(texColor.rgb, texColor.a * alpha * maskVal);
         }
         """;
     
@@ -166,6 +194,7 @@ public class Main {
         glfwSetCursorPosCallback(window, (win, xpos, ypos) -> {
             mouseX = xpos;
             mouseY = ypos;
+            lastMouseMoveTime = glfwGetTime();
             targetAngleX = ((mouseX / width) - 0.5) * 60.0;
             targetAngleY = -((mouseY / height) - 0.5) * 60.0;
             
@@ -256,10 +285,15 @@ public class Main {
         loadCanvasInfo();
         updateScale();
         initializeBuffers();
+        clippingManager = new CubismClippingManager();
+        clippingManager.initialize(model.getCore(), canvasWidth, canvasHeight,
+                canvasOriginX, canvasOriginY, pixelsPerUnit, textureIds, vaos, vboVertices, vboUvs, ebos);
         
         startTime = glfwGetTime();
-        lastBlinkTime = startTime;
-        nextBlinkTime = startTime + 2.0 + ThreadLocalRandom.current().nextDouble() * 3.0;
+        lastMouseMoveTime = startTime;
+        blinkStartTime = startTime;
+        nextBlinkTime = startTime + (3.0 + ThreadLocalRandom.current().nextDouble() * 5.0);  // AIRI: 3~8s
+        nextSaccadeAt = startTime + randomSaccadeIntervalSeconds();
         lastFpsTime = System.currentTimeMillis();
         
         System.out.println("[OK] Initialization complete");
@@ -325,7 +359,10 @@ public class Main {
             return;
         }
         
-        glUseProgram(shaderProgram);
+        if (clippingManager != null && clippingManager.hasMasks()) {
+            clippingManager.renderMasks(core, textureIds);
+        }
+        glViewport(0, 0, width, height);
         
         FloatBuffer projectionMatrix = BufferUtils.createFloatBuffer(16);
         projectionMatrix.put(new float[] {
@@ -335,11 +372,6 @@ public class Main {
             -1, 1, 0, 1
         });
         projectionMatrix.flip();
-        
-        int projectionLoc = glGetUniformLocation(shaderProgram, "projection");
-        glUniformMatrix4fv(projectionLoc, false, projectionMatrix);
-        
-        int alphaLoc = glGetUniformLocation(shaderProgram, "alpha");
         
         int drawableCount = core.getDrawableCount();
         int[] renderOrders = core.getDrawableRenderOrders();
@@ -367,17 +399,47 @@ public class Main {
             int textureIndex = core.getDrawableTextureIndex(i);
             if (textureIndex < 0 || textureIndex >= textureIds.size()) continue;
             
+            float drawableOpacity = core.getDrawableOpacity(i);
+            int parentPartIndex = core.getDrawableParentPartIndex(i);
+            float partOpacity = (parentPartIndex >= 0) ? core.getPartOpacity(parentPartIndex) : 1.0f;
+            float alpha = drawableOpacity * partOpacity;
+            
+            int maskCtx = (clippingManager != null) ? clippingManager.getContextForDrawable(i) : -1;
+            boolean useMask = maskCtx >= 0 && clippingManager != null && clippingManager.hasMasks();
+            
+            glUseProgram(shaderProgram);
+            int projLoc = glGetUniformLocation(shaderProgram, "projection");
+            glUniformMatrix4fv(projLoc, false, projectionMatrix);
+            glUniform1f(glGetUniformLocation(shaderProgram, "alpha"), alpha);
+            glUniform1i(glGetUniformLocation(shaderProgram, "useMask"), useMask ? 1 : 0);
+            
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, textureIds.get(textureIndex));
             glUniform1i(glGetUniformLocation(shaderProgram, "texture0"), 0);
-            glUniform1f(alphaLoc, 1.0f);
+            glActiveTexture(GL_TEXTURE1);
+            if (useMask) {
+                glBindTexture(GL_TEXTURE_2D, clippingManager.getMaskTextureId());
+                float[] layout = clippingManager.getLayoutForContext(maskCtx);
+                float[] bounds = clippingManager.getModelBounds();
+                if (layout != null && layout.length >= 4 && bounds != null && bounds.length >= 4) {
+                    glUniform4f(glGetUniformLocation(shaderProgram, "maskLayout"), layout[0], layout[1], layout[2], layout[3]);
+                    glUniform4f(glGetUniformLocation(shaderProgram, "modelBounds"), bounds[0], bounds[1], bounds[2], bounds[3]);
+                }
+            } else {
+                glBindTexture(GL_TEXTURE_2D, textureIds.get(0));
+            }
+            glUniform1i(glGetUniformLocation(shaderProgram, "maskTexture"), 1);
             
             FloatBuffer vertexBuffer = BufferUtils.createFloatBuffer(vertices.length * 2);
+            FloatBuffer modelPosBuffer = BufferUtils.createFloatBuffer(vertices.length * 2);
             for (CubismCore.csmVector2 v : vertices) {
                 vertexBuffer.put(transformX(v.X));
                 vertexBuffer.put(transformY(v.Y));
+                modelPosBuffer.put(v.X);
+                modelPosBuffer.put(v.Y);
             }
             vertexBuffer.flip();
+            modelPosBuffer.flip();
             
             FloatBuffer uvBuffer = BufferUtils.createFloatBuffer(uvs.length * 2);
             for (CubismCore.csmVector2 uv : uvs) {
@@ -395,6 +457,8 @@ public class Main {
             glBufferData(GL_ARRAY_BUFFER, vertexBuffer, GL_DYNAMIC_DRAW);
             glBindBuffer(GL_ARRAY_BUFFER, vboUvs[i]);
             glBufferData(GL_ARRAY_BUFFER, uvBuffer, GL_DYNAMIC_DRAW);
+            glBindBuffer(GL_ARRAY_BUFFER, vboModelPos[i]);
+            glBufferData(GL_ARRAY_BUFFER, modelPosBuffer, GL_DYNAMIC_DRAW);
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebos[i]);
             glBufferData(GL_ELEMENT_ARRAY_BUFFER, indexBuffer, GL_DYNAMIC_DRAW);
             
@@ -402,6 +466,29 @@ public class Main {
         }
     }
     
+    /** AIRI 风格：随机眼跳间隔（秒），基于概率分布 */
+    private double randomSaccadeIntervalSeconds() {
+        double r = ThreadLocalRandom.current().nextDouble();
+        double[] cumul = {0.075, 0.185, 0.31, 0.45, 0.575, 0.625, 0.665, 0.695, 0.715, 1.0};
+        int[] baseMs = {800, 1200, 1600, 2000, 2400, 2800, 3200, 3600, 4000, 4400};  // AIRI 源码 P[i][1]=P[i-1][1]+400
+        for (int i = 0; i < cumul.length; i++) {
+            if (r <= cumul[i]) {
+                return (baseMs[i] + ThreadLocalRandom.current().nextDouble() * 400) / 1000.0;
+            }
+        }
+        return 4.0 + ThreadLocalRandom.current().nextDouble() * 2.0;
+    }
+
+    /** AIRI 风格：easeOutQuad = 1 - (1-t)² */
+    private static float easeOutQuad(float t) {
+        return 1.0f - (1.0f - t) * (1.0f - t);
+    }
+
+    /** AIRI 风格：easeInQuad = t² */
+    private static float easeInQuad(float t) {
+        return t * t;
+    }
+
     private void updateModelParameters(Core core) {
         double currentTime = glfwGetTime();
         double elapsed = currentTime - startTime;
@@ -416,9 +503,27 @@ public class Main {
         core.setParameterValue("ParamAngleX", (float) currentAngleX);
         core.setParameterValue("ParamAngleY", (float) currentAngleY);
         core.setParameterValue("ParamAngleZ", (float) (currentAngleX * 0.3));
-        
-        core.setParameterValue("ParamEyeBallX", (float) (currentAngleX * 0.8 / 30.0));
-        core.setParameterValue("ParamEyeBallY", (float) (currentAngleY * 0.8 / 30.0));
+
+        // 眼球：鼠标跟随 or 空闲眼跳 (AIRI 风格)
+        double mouseIdleSeconds = currentTime - lastMouseMoveTime;
+        if (mouseIdleSeconds > 2.0) {
+            // 空闲 2 秒后：随机眼跳
+            if (currentTime >= nextSaccadeAt) {
+                targetEyeBallX = (float) (ThreadLocalRandom.current().nextDouble() * 2.0 - 1.0) * 0.5f;
+                targetEyeBallY = (float) (ThreadLocalRandom.current().nextDouble() * 1.7 - 1.0) * 0.5f;  // Y 偏上
+                nextSaccadeAt = currentTime + randomSaccadeIntervalSeconds();
+            }
+            currentEyeBallX += (targetEyeBallX - currentEyeBallX) * 0.3f;
+            currentEyeBallY += (targetEyeBallY - currentEyeBallY) * 0.3f;
+        } else {
+            // 鼠标活跃：跟随鼠标
+            float mouseEyeX = (float) (currentAngleX * 0.8 / 30.0);
+            float mouseEyeY = (float) (currentAngleY * 0.8 / 30.0);
+            currentEyeBallX += (mouseEyeX - currentEyeBallX) * 0.3f;
+            currentEyeBallY += (mouseEyeY - currentEyeBallY) * 0.3f;
+        }
+        core.setParameterValue("ParamEyeBallX", currentEyeBallX);
+        core.setParameterValue("ParamEyeBallY", currentEyeBallY);
         
         float bodySwayX = (float) (Math.sin(elapsed * 0.5) * 5.0 + currentAngleX * 0.2);
         float bodySwayY = (float) (Math.cos(elapsed * 0.6) * 3.0 + currentAngleY * 0.1);
@@ -426,33 +531,39 @@ public class Main {
         core.setParameterValue("ParamBodyAngleY", bodySwayY);
         core.setParameterValue("ParamBodyAngleZ", bodySwayX * 0.5f);
         
-        float eyeOpen = 1.0f;
-        if (currentTime >= nextBlinkTime && !isBlinking) {
-            isBlinking = true;
-            blinkStartTime = currentTime;
-        }
-        
-        if (isBlinking) {
-            double blinkElapsed = currentTime - blinkStartTime;
-            double blinkDuration = 0.15;
-            
-            if (blinkElapsed < blinkDuration) {
-                double t = blinkElapsed / blinkDuration;
-                if (t < 0.5) {
-                    eyeOpen = 1.0f - (float)(Math.sin(t * Math.PI));
-                } else {
-                    eyeOpen = (float)(Math.sin((t - 0.5) * Math.PI));
-                }
-                eyeOpen = Math.max(0.0f, eyeOpen);
-            } else {
-                isBlinking = false;
-                nextBlinkTime = currentTime + 2.0 + ThreadLocalRandom.current().nextDouble() * 4.0;
-                eyeOpen = 1.0f;
+        // AIRI 风格眨眼：easeOutQuad 闭眼 + easeInQuad 睁眼，各 200ms，间隔 3~8s
+        if (!expressionController.isEmotionControllingEyes()) {
+            float eyeLOpen = 1.0f;
+            float eyeROpen = 1.0f;
+            double blinkElapsedMs = (currentTime - blinkStartTime) * 1000.0;
+            if (blinkPhase == 0 && currentTime >= nextBlinkTime) {
+                blinkPhase = 1;
+                blinkStartTime = currentTime;
+                blinkStartLeft = 1.0f;
+                blinkStartRight = 1.0f;
             }
+            if (blinkPhase == 1) {
+                float progress = (float) Math.min(1.0, blinkElapsedMs / 200.0);
+                float eased = easeOutQuad(progress);
+                eyeLOpen = Math.max(0, blinkStartLeft * (1.0f - eased));
+                eyeROpen = Math.max(0, blinkStartRight * (1.0f - eased));
+                if (progress >= 1.0f) {
+                    blinkPhase = 2;
+                    blinkStartTime = currentTime;
+                }
+            } else if (blinkPhase == 2) {
+                float progress = (float) Math.min(1.0, blinkElapsedMs / 200.0);
+                float eased = easeInQuad(progress);
+                eyeLOpen = Math.min(1.0f, blinkStartLeft * eased);
+                eyeROpen = Math.min(1.0f, blinkStartRight * eased);
+                if (progress >= 1.0f) {
+                    blinkPhase = 0;
+                    nextBlinkTime = currentTime + (3.0 + ThreadLocalRandom.current().nextDouble() * 5.0);
+                }
+            }
+            core.setParameterValue("ParamEyeLOpen", eyeLOpen);
+            core.setParameterValue("ParamEyeROpen", eyeROpen);
         }
-        
-        core.setParameterValue("ParamEyeLOpen", eyeOpen);
-        core.setParameterValue("ParamEyeROpen", eyeOpen);
         
         // 注意：MouthForm / MouthOpenY / BrowLY / BrowRY / EyeSmile / Cheek
         // 已移交给 ExpressionController 管理（情绪映射 + 嘴型同步）
@@ -561,12 +672,14 @@ public class Main {
         vaos = new int[drawableCount];
         vboVertices = new int[drawableCount];
         vboUvs = new int[drawableCount];
+        vboModelPos = new int[drawableCount];
         ebos = new int[drawableCount];
         
         for (int i = 0; i < drawableCount; i++) {
             vaos[i] = glGenVertexArrays();
             vboVertices[i] = glGenBuffers();
             vboUvs[i] = glGenBuffers();
+            vboModelPos[i] = glGenBuffers();
             ebos[i] = glGenBuffers();
             
             glBindVertexArray(vaos[i]);
@@ -578,6 +691,10 @@ public class Main {
             glBindBuffer(GL_ARRAY_BUFFER, vboUvs[i]);
             glVertexAttribPointer(1, 2, GL_FLOAT, false, 2 * Float.BYTES, 0);
             glEnableVertexAttribArray(1);
+            
+            glBindBuffer(GL_ARRAY_BUFFER, vboModelPos[i]);
+            glVertexAttribPointer(2, 2, GL_FLOAT, false, 2 * Float.BYTES, 0);
+            glEnableVertexAttribArray(2);
         }
         
         glBindVertexArray(0);
@@ -608,11 +725,15 @@ public class Main {
             speechBubble.cleanup();
         }
         
+        if (clippingManager != null) {
+            clippingManager.release();
+        }
         if (vaos != null) {
             for (int vao : vaos) glDeleteVertexArrays(vao);
         }
         if (vboVertices != null) glDeleteBuffers(vboVertices);
         if (vboUvs != null) glDeleteBuffers(vboUvs);
+        if (vboModelPos != null) glDeleteBuffers(vboModelPos);
         if (ebos != null) glDeleteBuffers(ebos);
         
         for (int textureId : textureIds) glDeleteTextures(textureId);
