@@ -162,20 +162,20 @@ class BrowserSearchTool(BaseTool):
             try:
                 if page.locator(selector).count() > 0:
                     return True
-            except:
+            except Exception:
                 continue
-        
+
         # 检测页面文本中的验证提示
         try:
             body_text = page.locator("body").inner_text().lower()
             captcha_keywords = [
-                "验证", "captcha", "verification", "人机", 
+                "验证", "captcha", "verification", "人机",
                 "滑块", "slider", "拖动", "点击验证", "请完成安全验证"
             ]
             for keyword in captcha_keywords:
                 if keyword in body_text:
                     return True
-        except:
+        except Exception:
             pass
         
         return False
@@ -210,7 +210,7 @@ class BrowserSearchTool(BaseTool):
                     print(f"✅ 已尝试关闭弹窗")
                     page.wait_for_timeout(1000)
                     return True
-            except:
+            except Exception:
                 continue
         
         if self._manual_captcha:

@@ -17,10 +17,15 @@ src/backend/llm/api_infer/config.py
 DEEPSEEK_API_KEY=your-deepseek-api-key-here
 BASE_URL=https://api.deepseek.com/v1
 MODEL=deepseek-chat
+LIYING_DELETE_CONFIRM_KEY=your-delete-confirm-key
 
 或者在系统环境变量中设置：
 - Windows: set DEEPSEEK_API_KEY=your-api-key
 - Linux/Mac: export DEEPSEEK_API_KEY=your-api-key
+
+删除命令二次授权密钥（terminal_execute 工具）：
+- 环境变量名: LIYING_DELETE_CONFIRM_KEY
+- 用于执行删除命令前的弹窗密钥校验
 
 方式2：直接在代码中设置（不推荐，仅用于测试）
 ---------------------------------------------
@@ -50,13 +55,16 @@ API 密钥获取：
 DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 BASE_URL=https://api.deepseek.com/v1
 MODEL=deepseek-chat
+LIYING_DELETE_CONFIRM_KEY=your-delete-confirm-key
 
 环境变量格式（Windows CMD）：
 set DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 set BASE_URL=https://api.deepseek.com/v1
 set MODEL=deepseek-chat
+set LIYING_DELETE_CONFIRM_KEY=your-delete-confirm-key
 
 环境变量格式（Linux/Mac）：
 export DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 export BASE_URL=https://api.deepseek.com/v1
 export MODEL=deepseek-chat
+export LIYING_DELETE_CONFIRM_KEY=your-delete-confirm-key

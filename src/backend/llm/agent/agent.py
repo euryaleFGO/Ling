@@ -16,7 +16,7 @@ from ..memory.entity_extractor import get_entity_extractor
 from ..rag import get_rag_pipeline, RAGConfig
 from ..database.knowledge_dao import get_knowledge_dao
 from .tool_manager import ToolManager
-from ..tools import DateTimeTool, MemoryTool, SearchTool, SummaryTool, BrowserSearchTool, VisionTool, ScreenshotAnalyzeTool, ReminderTool
+from ..tools import DateTimeTool, MemoryTool, SummaryTool, BrowserSearchTool, VisionTool, ScreenshotAnalyzeTool, ReminderTool, Live2DMotionTool, ExitAppTool, CameraCaptureTool, TerminalExecuteTool, SkillGeneratorTool
 from ..utils.logging_config import setup_logging, get_logger, log_llm_request, log_llm_response, log_error
 
 try:
@@ -91,9 +91,6 @@ class Agent:
         memory_tool.set_memory_manager(self._memory_manager)
         self._tool_manager.register(memory_tool)
         
-        # 注册搜索工具（基础）
-        self._tool_manager.register(SearchTool())
-        
         # 注册浏览器搜索工具（自动化浏览器）
         # headless=False 表示显示浏览器窗口，方便观察
         # manual_captcha=True 表示遇到人机验证时等待手动处理（推荐）
@@ -109,6 +106,7 @@ class Agent:
         # 注册截图工具
         from ..tools import ScreenshotTool
         self._tool_manager.register(ScreenshotTool())
+        self._tool_manager.register(CameraCaptureTool())
         
         # 注册文件操作工具
         from ..tools import FileWriteTool, FileReadTool
@@ -122,7 +120,19 @@ class Agent:
         
         # 注册提醒/行程管理工具
         self._tool_manager.register(ReminderTool())
-        
+
+        # 注册 Live2D 动作工具（用户说「做个挥手」等时由 Agent 控制角色做动作）
+        self._tool_manager.register(Live2DMotionTool())
+
+        # 注册退出应用工具（用户告别/要求退出时调用）
+        self._tool_manager.register(ExitAppTool())
+
+        # 注册终端执行工具（允许 Agent 在 cmd 中执行命令）
+        self._tool_manager.register(TerminalExecuteTool())
+
+        # 注册技能生成器工具（允许 Agent 创建新工具）
+        self._tool_manager.register(SkillGeneratorTool())
+
         # 注册总结工具（内部使用）
         summary_tool = SummaryTool()
         summary_tool.set_llm_client(self._llm)
@@ -237,6 +247,8 @@ class Agent:
 当用户分享重要的个人信息时，使用记忆工具保存。
 当用户发送图片或询问图片内容时，使用视觉分析工具(vision_analyze)来理解图像。
 当需要分析屏幕截图时，使用截图分析工具(screenshot_analyze)来识别文字和界面元素。
+当用户明确表达结束会话/告别离开（如”你退下吧””你能自己关机吗””再见””拜拜””byebye””明天见””晚安””早点睡觉”）时，先调用 exit_app 工具，再给出简短告别语。
+当用户要求添加新功能、创建自动化工具、扩展技能时，使用 skill_generator 工具生成新工具。
 不要滥用工具，简单的闲聊不需要工具。""")
 
         # 7. TTS 友好输出（回复会用于语音合成，避免 Markdown/颜文字）

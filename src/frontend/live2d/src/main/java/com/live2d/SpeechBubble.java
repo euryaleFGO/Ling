@@ -64,6 +64,12 @@ public class SpeechBubble {
     private volatile float visemeOpenY = 0.0f;
     private volatile float visemeForm = 0.0f;
     private volatile long lastVisemeTime = 0;
+
+    // 待播放的动作（由 Agent 根据 LLM 情绪自主触发）
+    private final AtomicReference<String[]> pendingMotion = new AtomicReference<>(null);
+
+    // 对话状态（idle / listening / processing / speaking），用于空闲时自动动作
+    private final AtomicReference<String> conversationState = new AtomicReference<>("idle");
     
     // 气泡框渲染相关（使用现代 OpenGL）
     private int bubbleShaderProgram = 0;
@@ -562,8 +568,17 @@ public class SpeechBubble {
                         currentEmotion.set(json.get("emotion").getAsString());
                     }
                 }
+                case "motion" -> {
+                    if (json.has("group")) {
+                        String group = json.get("group").getAsString();
+                        int index = json.has("index") ? json.get("index").getAsInt() : 0;
+                        pendingMotion.set(new String[]{group, String.valueOf(index)});
+                    }
+                }
                 case "state" -> {
-                    // 可扩展：显示 listening / processing 指示器
+                    if (json.has("state")) {
+                        conversationState.set(json.get("state").getAsString());
+                    }
                 }
                 case "clear" -> clearMessage();
             }
@@ -618,6 +633,11 @@ public class SpeechBubble {
         return currentEmotion.get();
     }
 
+    /** 获取当前对话状态（idle / listening / processing / speaking） */
+    public String getConversationState() {
+        return conversationState.get();
+    }
+
     /** 获取当前音频 RMS 值 */
     public float getAudioRms() {
         return audioRms;
@@ -636,6 +656,11 @@ public class SpeechBubble {
     /** Viseme 数据是否新鲜（200ms 内有更新） */
     public boolean hasActiveViseme() {
         return lastVisemeTime > 0 && (System.currentTimeMillis() - lastVisemeTime) < 200;
+    }
+
+    /** 获取并清除待播放动作，返回 [group, index] 或 null */
+    public String[] takePendingMotion() {
+        return pendingMotion.getAndSet(null);
     }
 
     /** WebSocket 是否已连接 */

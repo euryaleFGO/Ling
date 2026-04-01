@@ -18,7 +18,7 @@ from core.log import log, set_debug
 from gui.main_window import MainWindow
 
 class Launcher:
-    def __init__(self, debug_mode=False, enable_conversation=True, text_only=False):
+    def __init__(self, debug_mode=False, enable_conversation=True, text_only=False, asr_device="auto"):
         self.app = QApplication(sys.argv)
         self.app.setApplicationName("玲 - 中控中心")
         self.app.setQuitOnLastWindowClosed(False)
@@ -27,6 +27,7 @@ class Launcher:
         self.debug_mode = debug_mode
         self.enable_conversation = enable_conversation
         self.text_only = text_only  # 文字输入模式（不使用麦克风）
+        self.asr_device = asr_device
         
         # 设置全局日志级别
         set_debug(debug_mode)
@@ -218,7 +219,8 @@ class Launcher:
                 config = ConversationConfig(
                     user_id="default_user",
                     use_vad=True,
-                    silence_duration=1.2,
+                    silence_duration=0.55,
+                    asr_device=self.asr_device,
                     tts_remote_url="http://localhost:18888",  # 远程 TTS（需先开 SSH 隧道）
                     tts_spk_id="玲",  # 使用已注册的说话人
                     use_text_input=self.text_only,  # 文字输入模式
@@ -226,12 +228,26 @@ class Launcher:
                 
                 self._conversation_manager = ConversationManager(config)
                 
-                # 设置回调（支持情绪 + RMS 嘴型同步 + Viseme 口型同步）
+                # 情绪 → Live2D 动作映射（Agent 根据 LLM 情绪自主触发）
+                EMOTION_TO_MOTION = {
+                    "joy": "Tap@Body",      # 开心 → 挥手/抬手
+                    "surprise": "Tap",      # 惊讶 → Tap
+                    "anger": "Flick",       # 生气 → 快速挥手
+                    "sadness": "Idle",      # 悲伤 → 保持空闲（不触发额外动作）
+                    "shy": "Tap@Body",      # 害羞 → 轻触身体
+                    "think": "Idle",        # 思考 → 不触发
+                }
+
                 def on_subtitle(text, is_final, emotion="neutral"):
                     """AI 字幕回调 → 通过 WebSocket 发送给 Live2D"""
                     try:
-                        from core.message_server import send_message
+                        from core.message_server import send_message, send_motion
                         send_message(text, emotion=emotion, is_final=is_final)
+                        # 最终字幕时，根据情绪触发对应动作（仅非 neutral）
+                        if is_final and emotion and emotion != "neutral":
+                            motion = EMOTION_TO_MOTION.get(emotion)
+                            if motion and motion != "Idle":
+                                send_motion(motion)
                     except Exception:
                         pass
                 
@@ -250,11 +266,26 @@ class Launcher:
                         send_viseme(openY, form)
                     except Exception:
                         pass
+
+                def on_state_change(state):
+                    """对话状态变化 → 供 Live2D 做空闲时自动动作等"""
+                    try:
+                        from core.message_server import send_state
+                        send_state(state.value)
+                    except Exception:
+                        pass
+
+                def on_exit_requested(reason: str):
+                    """对话请求退出应用（在当前播报结束后触发）"""
+                    log.info(f"收到对话退出请求: {reason}")
+                    self.quit_app()
                 
                 self._conversation_manager.set_callbacks(
                     on_subtitle=on_subtitle,
                     on_audio_rms=on_audio_rms,
                     on_viseme=on_viseme,
+                    on_state_change=on_state_change,
+                    on_exit_requested=on_exit_requested,
                 )
                 
                 # 启动对话（阻塞）

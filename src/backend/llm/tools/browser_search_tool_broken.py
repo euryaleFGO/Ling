@@ -348,7 +348,8 @@ class BrowserSearchTool(BaseTool):
         page = context.new_page()
         page.set_default_timeout(self._timeout)
         
-        try:检测是否有人机验证
+        try:
+            # 检测是否有人机验证
             if self._detect_captcha(page):
                 if not self._handle_captcha(page, "阅读"):
                     raise RuntimeError("人机验证未通过，无法继续读取内容")

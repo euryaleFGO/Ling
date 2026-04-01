@@ -12,9 +12,14 @@ MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
 # Embedding 模型目录
 EMBEDDING_MODEL_DIR = os.path.join(MODELS_DIR, "embedding")
 
-import chromadb
-from chromadb.config import Settings
-from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2
+try:
+    import chromadb
+    from chromadb.config import Settings
+    from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2
+except Exception:  # 依赖可能因网络/代理无法安装
+    chromadb = None
+    Settings = None
+    ONNXMiniLM_L6_V2 = object
 from typing import Optional, List, Dict, Any
 import logging
 
@@ -32,7 +37,7 @@ class ChromaClient:
     """Chroma 向量数据库客户端"""
     
     _instance: Optional['ChromaClient'] = None
-    _client: Optional[chromadb.Client] = None
+    _client: Optional["chromadb.Client"] = None
     _embedding_function = None
     
     # Collection 名称
@@ -46,6 +51,11 @@ class ChromaClient:
         return cls._instance
     
     def __init__(self, persist_directory: str = None):
+        if chromadb is None:
+            raise RuntimeError(
+                "未安装 chromadb，向量检索功能不可用。"
+                "请先安装 chromadb（可能需要配置代理/镜像源），或暂时关闭 RAG/向量检索相关功能。"
+            )
         if self._client is None:
             # 默认持久化到项目根目录的 data 目录
             if persist_directory is None:
@@ -72,7 +82,7 @@ class ChromaClient:
             logger.info(f"Embedding 模型路径: {LocalONNXMiniLM.DOWNLOAD_PATH}")
     
     @property
-    def client(self) -> chromadb.Client:
+    def client(self) -> "chromadb.Client":
         return self._client
     
     @property
@@ -84,7 +94,7 @@ class ChromaClient:
         self, 
         name: str,
         embedding_function=None
-    ) -> chromadb.Collection:
+    ) -> "chromadb.Collection":
         """获取或创建集合"""
         # 默认使用本地 embedding 函数
         ef = embedding_function or self._embedding_function
@@ -93,15 +103,15 @@ class ChromaClient:
             embedding_function=ef
         )
     
-    def get_knowledge_collection(self) -> chromadb.Collection:
+    def get_knowledge_collection(self) -> "chromadb.Collection":
         """获取知识库集合"""
         return self.get_or_create_collection(self.KNOWLEDGE_COLLECTION)
     
-    def get_memory_collection(self) -> chromadb.Collection:
+    def get_memory_collection(self) -> "chromadb.Collection":
         """获取记忆集合"""
         return self.get_or_create_collection(self.MEMORY_COLLECTION)
     
-    def get_conversation_collection(self) -> chromadb.Collection:
+    def get_conversation_collection(self) -> "chromadb.Collection":
         """获取对话集合"""
         return self.get_or_create_collection(self.CONVERSATION_COLLECTION)
 
@@ -126,7 +136,7 @@ class VectorStore:
         self._collection = None
     
     @property
-    def collection(self) -> chromadb.Collection:
+    def collection(self) -> "chromadb.Collection":
         if self._collection is None:
             client = get_chroma_client()
             self._collection = client.get_or_create_collection(self.collection_name)

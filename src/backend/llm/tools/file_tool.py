@@ -122,10 +122,10 @@ class FileReadTool(BaseTool):
     def execute(self, filepath: str) -> ToolResult:
         """读取文件"""
         try:
-            # 安全检查
-            # is_allowed = any(filepath.startswith(d) for d in self._allowed_dirs)
-            # if not is_allowed:
-            #     return ToolResult(success=False, error="不允许访问该路径")
+            # 安全检查：只允许访问指定目录
+            is_allowed = any(filepath.startswith(d) for d in self._allowed_dirs)
+            if not is_allowed:
+                return ToolResult(success=False, error=f"不允许访问该路径: {filepath}，只允许访问: {self._allowed_dirs}")
             
             if not os.path.exists(filepath):
                 return ToolResult(success=False, error=f"文件不存在: {filepath}")

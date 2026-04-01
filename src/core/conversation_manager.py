@@ -28,7 +28,11 @@ src_path = project_root / "src"
 sys.path.insert(0, str(src_path))
 
 from core.audio_io import AudioInput, AudioOutput, AudioConfig
+from core.vad import VADConfig
 from core.log import log
+from core.exit_signal import consume_exit_request
+from core.emotion_classifier import EmotionClassifier
+from core.ser_engine import SEREngine, SERResult
 
 
 class ConversationState(Enum):
@@ -44,7 +48,11 @@ class ConversationState(Enum):
 class ConversationConfig:
     """对话配置"""
     # ASR 配置
-    asr_model_dir: str = None      # ASR 模型目录
+    asr_model_dir: str = None      # ASR 模型目录（本地 FunASR）
+    asr_provider: str = "funasr"   # "funasr" | "whisper"
+    asr_device: str = "auto"       # "auto" | "cpu" | "cuda" | "cuda:0"
+    whisper_api_base: str = None   # 远程 Whisper API（如 "https://api.openai.com/v1"）
+    whisper_api_key: str = None    # API Key
     use_vad: bool = True           # 使用 VAD
     use_text_input: bool = False   # 使用终端文字输入（禁用ASR/麦克风）
     
@@ -56,14 +64,22 @@ class ConversationConfig:
     # Agent 配置
     user_id: str = "default_user"
     
-    # 音频配置
+    # 音频 / VAD 配置
     sample_rate: int = 16000
     silence_threshold: float = 0.01
-    silence_duration: float = 1.2   # 静音多久认为说完
+    silence_duration: float = 0.6   # 静音多久认为说完
+    vad_backend: str = "rms"        # "rms" | "silero"
+    vad_preset: str = "balanced"    # "aggressive" | "balanced" | "conservative"
     
     # 交互配置
-    interrupt_on_speak: bool = True  # 用户说话时打断 AI
-    auto_listen: bool = True         # AI 说完后自动监听
+    interrupt_on_speak: bool = True
+    auto_listen: bool = True
+
+    # SER 配置（语音情绪识别）
+    enable_ser: bool = True
+    ser_model_id: str = None        # 默认使用 SEREngine.DEFAULT_MODEL_ID
+    ser_device: str = "auto"        # "auto" | "cpu" | "cuda" | "cuda:0"
+    ser_min_audio_sec: float = 0.8  # 太短的语音不做 SER（减少误判/开销）
 
 
 class ConversationManager:
@@ -99,10 +115,15 @@ class ConversationManager:
         self._on_user_text: Optional[Callable] = None
         self._on_ai_text: Optional[Callable] = None
         self._on_subtitle: Optional[Callable] = None
-        self._on_audio_rms: Optional[Callable] = None    # RMS 嘴型同步
+        self._on_audio_rms: Optional[Callable] = None
+        self._on_viseme: Optional[Callable] = None
+        self._on_exit_requested: Optional[Callable] = None
         
         # 情绪状态
         self._current_emotion: str = "neutral"
+        self._emotion_classifier = EmotionClassifier()
+        self._current_user_emotion: str = "neutral"
+        self._ser: SEREngine | None = None
         
         # 字幕服务
         self._subtitle_callback = None
@@ -111,65 +132,91 @@ class ConversationManager:
         self._reminder_manager = None
     
     def _init_asr(self):
-        """初始化 ASR（基于 FunASR AutoModel）"""
+        """初始化 ASR（FunASR 本地或 Whisper 远程）"""
         if self._asr is not None:
             return
         
-        # 如果配置为文字输入模式，跳过 ASR 初始化
         if self.config.use_text_input:
             log.debug("[对话] 使用文字输入模式，跳过 ASR 初始化")
             self._asr = None
             return
         
+        provider = (self.config.asr_provider or "funasr").lower()
+        
+        if provider == "whisper":
+            try:
+                from backend.asr.providers import WhisperRemoteProvider
+                base = self.config.whisper_api_base or "https://api.openai.com/v1"
+                key = self.config.whisper_api_key or ""
+                self._asr = WhisperRemoteProvider(api_base=base, api_key=key)
+                log.debug("[对话] ASR: Whisper 远程模式")
+            except Exception as e:
+                log.warn(f"Whisper ASR 初始化失败: {e}")
+                self._asr = None
+            return
+        
+        # FunASR 本地
         try:
-            from backend.asr import ASREngine, ASRConfig
+            from backend.asr.providers import FunASRProvider
             
-            # 查找模型目录
             model_dir = self.config.asr_model_dir
             if not model_dir:
-                # 默认路径
-                default_paths = [
+                for p in [
                     project_root / "models" / "ASR" / "paraformer-zh-streaming",
                     Path("E:/Avalon/Chaldea/Liying/models/ASR/paraformer-zh-streaming"),
-                ]
-                for p in default_paths:
+                ]:
                     if p.exists():
                         model_dir = str(p)
                         break
             
-            # VAD 模型目录
             vad_model = None
             if self.config.use_vad:
-                vad_paths = [
+                for p in [
                     project_root / "models" / "ASR" / "fsmn-vad",
                     Path("E:/Avalon/Chaldea/Liying/models/ASR/fsmn-vad"),
-                ]
-                for p in vad_paths:
+                ]:
                     if p.exists():
                         vad_model = str(p)
                         break
-                if not vad_model:
-                    vad_model = "fsmn-vad"  # 让 AutoModel 自动下载
+                vad_model = vad_model or "fsmn-vad"
             
             if model_dir and Path(model_dir).exists():
-                asr_config = ASRConfig(
-                    model_dir=model_dir,
-                    vad_model=vad_model,
-                    use_vad=self.config.use_vad,
-                    device="cpu",
-                )
-                self._asr = ASREngine(config=asr_config)
-                log.debug("[对话] ASR 引擎初始化完成")
+                asr_device = self._resolve_asr_device(self.config.asr_device)
+                self._asr = FunASRProvider(model_dir=model_dir, vad_model=vad_model, device=asr_device)
+                log.debug(f"[对话] ASR: FunASR 本地模式 (device={asr_device})")
             else:
                 log.warn(f"ASR 模型目录不存在: {model_dir}")
-                log.warn("请下载模型到 models/ASR/paraformer-zh-streaming")
                 self._asr = None
         except Exception as e:
             log.warn(f"ASR 初始化失败: {e}")
             import traceback
             traceback.print_exc()
-            log.info("将使用文本输入模式")
             self._asr = None
+
+    def _resolve_asr_device(self, requested: str) -> str:
+        """解析 ASR 设备：支持 auto 自动选择 CUDA/CPU。"""
+        req = (requested or "auto").strip().lower()
+
+        def _cuda_available() -> bool:
+            try:
+                import torch
+                return bool(torch.cuda.is_available())
+            except Exception:
+                return False
+
+        if req == "auto":
+            return "cuda:0" if _cuda_available() else "cpu"
+
+        if req == "cuda":
+            req = "cuda:0"
+
+        if req.startswith("cuda"):
+            if _cuda_available():
+                return req
+            log.warn(f"ASR 指定设备 '{requested}' 不可用，已回退到 cpu")
+            return "cpu"
+
+        return "cpu"
     
     def _init_tts(self):
         """初始化 TTS（支持本地和远程模式）"""
@@ -286,26 +333,64 @@ class ConversationManager:
                 log.warn(f"提醒 TTS 播报失败: {e}")
     
     def _init_audio(self):
-        """初始化音频设备（chunk_size 从 ASR 引擎动态获取）"""
-        # 先初始化 ASR，获取正确的 chunk_stride
+        """初始化音频设备（chunk_size 从 ASR 获取，VAD 可配置）"""
         self._init_asr()
         
-        # 根据 ASR 模型决定 chunk_size，确保匹配
-        chunk_size = 9600  # 默认 600ms
-        if self._asr:
+        chunk_size = 5760  # 默认 360ms
+        if self._asr and hasattr(self._asr, "get_chunk_stride"):
             chunk_size = self._asr.get_chunk_stride()
-            log.debug(f"[AudioIO] 使用 ASR chunk_stride: {chunk_size} 样本 ({chunk_size / self.config.sample_rate * 1000:.0f}ms)")
+            log.debug(f"[AudioIO] chunk_stride: {chunk_size} ({chunk_size / self.config.sample_rate * 1000:.0f}ms)")
+        
+        vad_config = VADConfig.preset(self.config.vad_preset)
+        vad_config.backend = self.config.vad_backend
+        vad_config.silence_duration = self.config.silence_duration
+        # 提高端点稳定性，减少句尾截断与误触发
+        vad_config.min_speech_chunks = max(2, vad_config.min_speech_chunks)
+        vad_config.hangover_chunks = max(2, vad_config.hangover_chunks)
+        vad_config.pre_buffer_chunks = max(4, vad_config.pre_buffer_chunks)
         
         audio_config = AudioConfig(
             sample_rate=self.config.sample_rate,
-            dtype="float32",       # float32 录制，值域 [-1, 1]，不需要额外归一化
-            chunk_size=chunk_size,  # 与 ASR 模型匹配
-            silence_threshold=self.config.silence_threshold,
-            silence_duration=self.config.silence_duration,
+            dtype="float32",
+            chunk_size=chunk_size,
+            vad_config=vad_config,
+            vad_backend=self.config.vad_backend,
         )
         self._audio_input = AudioInput(audio_config)
         self._audio_output = AudioOutput()
         log.debug("[对话] 音频设备初始化完成")
+
+    def _init_ser(self):
+        """初始化 SER（懒加载 pipeline；失败不影响主流程）"""
+        if not self.config.enable_ser:
+            self._ser = None
+            return
+        if self._ser is not None:
+            return
+        try:
+            self._ser = SEREngine(
+                model_id=self.config.ser_model_id,
+                device=self.config.ser_device,
+            )
+            log.debug("[对话] SER 初始化完成（懒加载模型）")
+        except Exception as e:
+            log.warn(f"SER 初始化失败（将跳过语音情绪识别）: {e}")
+            self._ser = None
+
+    @staticmethod
+    def _emotion9_to_cn(e: str) -> str:
+        m = {
+            "neutral": "中性",
+            "joy": "愉快",
+            "anger": "愤怒",
+            "sadness": "悲伤",
+            "surprise": "惊讶",
+            "shy": "害羞",
+            "think": "思考",
+            "fear": "害怕",
+            "cry": "想哭",
+        }
+        return m.get(e, e)
     
     def initialize(self):
         """初始化所有组件"""
@@ -315,6 +400,7 @@ class ConversationManager:
         self._init_tts()
         self._init_agent()
         self._init_reminder()
+        self._init_ser()
         log.info("对话系统初始化完成")
     
     def set_callbacks(
@@ -325,6 +411,7 @@ class ConversationManager:
         on_subtitle: Callable[[str, bool], None] = None,
         on_audio_rms: Callable[[float], None] = None,
         on_viseme: Callable[[float, float], None] = None,
+        on_exit_requested: Callable[[str], None] = None,
     ):
         """
         设置回调函数
@@ -336,6 +423,7 @@ class ConversationManager:
             on_subtitle: 字幕回调 (text, is_final, emotion)
             on_audio_rms: 音频 RMS 回调 (rms_value) — 驱动嘴型同步
             on_viseme: Viseme 回调 (openY, form) — Rhubarb 口型同步
+            on_exit_requested: 退出请求回调 (reason)
         """
         self._on_state_change = on_state_change
         self._on_user_text = on_user_text
@@ -343,6 +431,7 @@ class ConversationManager:
         self._on_subtitle = on_subtitle
         self._on_audio_rms = on_audio_rms
         self._on_viseme = on_viseme
+        self._on_exit_requested = on_exit_requested
     
     def _set_state(self, state: ConversationState):
         """设置状态"""
@@ -439,8 +528,30 @@ class ConversationManager:
                 # 3. TTS 播放
                 self._set_state(ConversationState.SPEAKING)
                 t0_tts = time.perf_counter()
+                # 说话时暂停麦克风，避免回声/串音污染下一轮 ASR 队列
+                try:
+                    if self._audio_input:
+                        self._audio_input.stop_listening()
+                except Exception:
+                    pass
                 self._speak(ai_response)
+                try:
+                    if self._audio_input and self.config.auto_listen:
+                        self._audio_input.start_listening()
+                except Exception:
+                    pass
                 log.debug(f"[耗时] TTS+播放 总: {time.perf_counter() - t0_tts:.2f}s")
+
+                # Agent 工具请求退出：等本轮 TTS 播完后再退出
+                exit_reason = consume_exit_request()
+                if exit_reason is not None:
+                    log.info(f"收到退出请求，准备退出程序: {exit_reason}")
+                    if self._on_exit_requested:
+                        try:
+                            self._on_exit_requested(exit_reason)
+                        except Exception as e:
+                            log.warn(f"退出回调执行失败: {e}")
+                    break
                 
                 # 4. 回到监听状态
                 self._set_state(ConversationState.IDLE)
@@ -467,40 +578,87 @@ class ConversationManager:
                 return self._listen_with_text()
         return self._listen_with_text()
 
+    def _merge_streaming_results(self, parts: list) -> str:
+        """
+        合并流式识别结果，去重
+        FunASR 流式返回累积结果（新=旧+增量），直接 append 会重复，取最长作为累积文本
+        """
+        if not parts:
+            return ""
+        merged = (parts[0] or "").strip()
+        for p in parts[1:]:
+            if not p:
+                continue
+            p = p.strip()
+            if not p:
+                continue
+            if p.startswith(merged):
+                merged = p
+            elif merged.endswith(p[:min(len(p), len(merged))]):
+                for i in range(min(len(p), len(merged)), 0, -1):
+                    if merged.endswith(p[:i]):
+                        merged = merged + p[i:]
+                        break
+                else:
+                    merged = merged + p
+            else:
+                merged = merged + p
+        return merged.strip()
+
+    def _collapse_repeated_asr_text(self, text: str) -> str:
+        """
+        折叠 ASR 误重复的整句文本。
+
+        仅处理“同一短句完整重复 2~4 次”的情况，避免影响正常表达。
+        例如："喂你好喂你好喂你好" -> "喂你好"
+        """
+        if not text:
+            return ""
+
+        s = text.strip()
+        if len(s) < 4:
+            return s
+
+        # 仅在整句完全重复时折叠（2~4 次），并限制句长避免误伤长文本
+        m = re.fullmatch(r"(.{2,20}?)\1{1,3}", s)
+        if not m:
+            return s
+
+        unit = m.group(1)
+        # 跳过单字符重复（如“哈哈哈”），尽量降低误判
+        if len(set(unit)) == 1:
+            return s
+
+        return unit
+
     def _listen_with_asr(self) -> Optional[str]:
         """
         使用 ASR 监听麦克风
         
-        流程：
-        1. 开始流式识别（start_stream）
-        2. 每个 chunk 送入 feed_audio 获取中间结果（用于实时字幕）
-        3. VAD 检测到语音结束后，用 end_stream 获取最终结果
-        4. 如果流式结果不佳，回退到离线模型对完整音频重新识别
+        - 本地 FunASR：流式中间结果用于实时字幕，end_stream 为最终结果
+        - 远程 Whisper：无流式，录音结束后整段发送
+        - 麦克风始终本地采集
         """
         log.info("🎤 请说话...")
         
-        # 流式中间结果收集（用于实时字幕显示）
-        streaming_text_parts = []
-        # 完整音频引用（由 on_speech_end 设置）
+        streaming_parts = []
         full_audio_ref = [None]
+        supports_streaming = getattr(self._asr, "supports_streaming", False)
 
         def on_speech_start():
             log.debug("检测到语音...")
 
         def on_chunk(chunk):
-            """ASR 流式推理：发送每个 chunk 获取中间结果"""
             if self._asr:
                 result = self._asr.feed_audio(chunk)
-                if result:
-                    streaming_text_parts.append(result)
-                    current = "".join(streaming_text_parts)
-                    log.debug(f"[ASR] 中间结果: '{current}')")
+                if result and supports_streaming:
+                    streaming_parts.append(result)
+                    merged = self._merge_streaming_results(streaming_parts)
+                    log.debug(f"[ASR] 中间: '{merged}'")
 
         def on_speech_end(full_audio):
-            """VAD 检测到语音结束，保存完整音频并发送最后一帧"""
             full_audio_ref[0] = full_audio
 
-        # 初始化流式识别
         self._asr.start_stream()
         
         self._audio_input.record_until_silence(
@@ -509,38 +667,44 @@ class ConversationManager:
             on_speech_end=on_speech_end,
         )
         
-        # --- 结果汇总 ---
         full_audio = full_audio_ref[0]
+        final = (self._asr.end_stream() or "").strip()
+        merged_stream = self._merge_streaming_results(streaming_parts)
         
-        # 1. 尝试用 end_stream 获取流式最终结果
-        final_from_stream = ""
-        if self._asr:
-            final_from_stream = self._asr.end_stream() or ""
+        if supports_streaming and not final:
+            final = merged_stream
+        elif supports_streaming and merged_stream and len(merged_stream) > len(final) + 1:
+            # 某些场景 end_stream 仅返回尾字，优先采用更完整的流式合并结果
+            final = merged_stream
         
-        # 2. 拼接流式中间结果 + end_stream 尾部结果
-        stream_result = "".join(streaming_text_parts) + final_from_stream
-        stream_result = stream_result.strip()
-        
-        # 3. 如果流式结果太短或可能不准，用离线模型对完整音频重新识别
         if full_audio is not None and len(full_audio) > 0:
-            # 音频超过 0.5 秒才值得离线识别
             duration_sec = len(full_audio) / self.config.sample_rate
-            
-            if duration_sec > 0.5 and (not stream_result or len(stream_result) < 2):
-                # 流式结果太短/为空，回退离线识别
-                log.debug(f"[对话] 流式结果不佳 ('{stream_result}')，尝试离线识别 ({duration_sec:.1f}s 音频)")
+            # 仅在结果为空或过短时做离线兜底，兼顾准确率与时延
+            if duration_sec > 0.7 and (not final or len(final) <= 1):
                 try:
-                    offline_result = self._asr.recognize_audio(full_audio, self.config.sample_rate)
-                    if offline_result and len(offline_result) > len(stream_result):
-                        log.debug(f"[对话] 离线识别结果: '{offline_result}'")
-                        stream_result = offline_result.strip()
+                    offline = self._asr.recognize_audio(full_audio, self.config.sample_rate)
+                    if offline and len(offline) >= len(final):
+                        final = offline.strip()
                 except Exception as e:
                     log.warn(f"离线识别失败: {e}")
+
+            # SER：对用户语音做情绪识别（不阻塞主流程太久；失败则忽略）
+            if self.config.enable_ser and duration_sec >= (self.config.ser_min_audio_sec or 0.8):
+                try:
+                    self._init_ser()
+                    if self._ser is not None:
+                        t0_ser = time.perf_counter()
+                        r: SERResult = self._ser.predict(full_audio, sample_rate=self.config.sample_rate)
+                        self._current_user_emotion = r.emotion9
+                        log.debug(f"[耗时] SER: {time.perf_counter() - t0_ser:.2f}s, emo={r.emotion9}, score={r.score:.2f}")
+                except Exception as e:
+                    log.debug(f"SER 推断失败（忽略）: {e}")
         
-        if stream_result:
-            log.debug(f"[ASR] 最终结果: '{stream_result}'")
-        
-        return stream_result if stream_result else None
+        final = self._collapse_repeated_asr_text(final)
+
+        if final:
+            log.debug(f"[ASR] 最终: '{final}'")
+        return final or None
     
     def _listen_with_text(self) -> Optional[str]:
         """使用文本输入（调试模式）"""
@@ -557,7 +721,12 @@ class ConversationManager:
     _VALID_EMOTIONS = {"neutral", "joy", "anger", "sadness", "surprise", "shy", "think", "fear", "cry"}
 
     def _parse_emotion(self, text: str) -> tuple:
-        """从 AI 回复中提取情绪标签，返回 (clean_text, emotion)"""
+        """从 AI 回复中提取情绪标签，返回 (clean_text, emotion)。
+
+        优先级：
+        1. 显式标签（如 [joy]）
+        2. 规则情绪分类兜底
+        """
         emotions_found = self._EMOTION_PATTERN.findall(text)
         emotion = "neutral"
         for e in emotions_found:
@@ -567,6 +736,13 @@ class ConversationManager:
         clean_text = self._EMOTION_PATTERN.sub("", text).strip()
         # 清除多余空格
         clean_text = re.sub(r'  +', ' ', clean_text)
+
+        # 无显式标签时进行轻量规则推断
+        if emotion == "neutral" and clean_text:
+            inferred = self._emotion_classifier.classify(clean_text)
+            if inferred.emotion in self._VALID_EMOTIONS:
+                emotion = inferred.emotion
+
         return (clean_text or text.strip(), emotion)
 
     def _generate_response(self, user_text: str) -> Optional[str]:
@@ -575,12 +751,18 @@ class ConversationManager:
             return "抱歉，AI 服务未初始化"
         
         try:
+            # 将用户语音情绪作为上下文提示（尽量不污染语义检索：只加一行简短信息）
+            user_input = user_text
+            ue = (self._current_user_emotion or "neutral").strip().lower()
+            if ue and ue != "neutral":
+                user_input = f"（用户当前情绪：{self._emotion9_to_cn(ue)}）{user_text}"
+
             # 流式获取回复；字幕节流
             response_parts = []
             last_sent_len = 0
             SUBTITLE_CHUNK = 6  # WebSocket 更快，可以更频繁更新
 
-            for chunk in self._agent.chat(user_text, stream=True):
+            for chunk in self._agent.chat(user_input, stream=True):
                 response_parts.append(chunk)
                 current = "".join(response_parts)
                 if len(current) - last_sent_len >= SUBTITLE_CHUNK:
