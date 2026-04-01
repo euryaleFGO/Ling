@@ -10,7 +10,7 @@ import wave
 import threading
 import queue
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 from dataclasses import dataclass
 from collections import deque
 
@@ -29,6 +29,8 @@ except ImportError:
         @staticmethod
         def error(msg): print(msg)
     log = _Fallback()
+
+from core.vad import VADConfig, create_vad, VADBackend
 
 # 尝试导入音频库
 try:
@@ -51,15 +53,18 @@ class AudioConfig:
     sample_rate: int = 16000      # 采样率
     channels: int = 1              # 声道数
     dtype: str = "float32"         # 数据类型（float32 值域 [-1,1]，ASR 模型需要）
-    chunk_size: int = 9600         # 每次读取的样本数 (600ms at 16kHz，匹配 Paraformer 流式 chunk)
-    silence_threshold: float = 0.008 # 静音阈值（RMS），会被自适应噪声底噪覆盖
-    silence_duration: float = 1.0    # 静音持续时间（秒）触发结束
+    chunk_size: int = 5760          # 每次读取的样本数 (360ms at 16kHz，匹配 Paraformer chunk [0,6,3])
     max_duration: float = 30.0       # 最大录音时长（秒）
-    # VAD 高级参数
-    min_speech_chunks: int = 1       # 最少连续语音块数才算有效语音开始（降低以避免短语漏检）
-    hangover_chunks: int = 2         # 语音结束后延长的块数（防止截断尾音）
-    pre_buffer_chunks: int = 3       # 预缓冲块数，语音开始时回溯，防止开头吃字
-    noise_floor_alpha: float = 0.05  # 噪声底噪平滑系数（越小越平滑）
+    # VAD 配置（可用 VADConfig 或兼容的 kwargs）
+    vad_config: Optional[VADConfig] = None
+    # 兼容旧参数（当 vad_config 为 None 时使用）
+    silence_threshold: float = 0.008
+    silence_duration: float = 0.6
+    min_speech_chunks: int = 1
+    hangover_chunks: int = 1
+    pre_buffer_chunks: int = 2
+    noise_floor_alpha: float = 0.05
+    vad_backend: str = "rms"  # "rms" | "silero"
 
 
 class AudioInput:
@@ -68,7 +73,7 @@ class AudioInput:
     
     支持:
     - 连续监听模式
-    - 语音活动检测 (VAD)
+    - 语音活动检测 (VAD)：RMS 或 Silero 后端
     - 回调函数处理音频
     """
     
@@ -84,10 +89,24 @@ class AudioInput:
         self._silence_start = None
         self._speech_buffer = []
         
-        # 自适应噪声底噪
-        self._noise_floor: float = 0.0
-        self._noise_floor_initialized = False
-        self._noise_calibration_chunks = 0
+        # 构建 VADConfig 与后端
+        self._vad_config = self._build_vad_config()
+        self._vad: VADBackend = create_vad(self._vad_config)
+        log.debug(f"[AudioIO] VAD 后端: {self._vad_config.backend}")
+    
+    def _build_vad_config(self) -> VADConfig:
+        """从 AudioConfig 构建 VADConfig"""
+        if self.config.vad_config is not None:
+            return self.config.vad_config
+        return VADConfig(
+            backend=self.config.vad_backend,
+            silence_duration=self.config.silence_duration,
+            min_speech_chunks=self.config.min_speech_chunks,
+            hangover_chunks=self.config.hangover_chunks,
+            pre_buffer_chunks=self.config.pre_buffer_chunks,
+            silence_threshold=self.config.silence_threshold,
+            noise_floor_alpha=self.config.noise_floor_alpha,
+        )
         
     def add_callback(self, callback: Callable[[np.ndarray], None]):
         """添加音频数据回调"""
@@ -105,11 +124,7 @@ class AudioInput:
         self._speech_buffer = []
         self._is_speaking = False
         self._silence_start = None
-        
-        # 重置噪声底噪校准
-        self._noise_floor = 0.0
-        self._noise_floor_initialized = False
-        self._noise_calibration_chunks = 0
+        self._vad.reset()
         
         def audio_callback(indata, frames, time_info, status):
             if status:
@@ -155,44 +170,24 @@ class AudioInput:
             return self._audio_buffer.get(timeout=timeout)
         except queue.Empty:
             return None
-    
-    def _compute_rms(self, audio_chunk: np.ndarray) -> float:
-        """计算音频块的 RMS 值"""
-        if audio_chunk.dtype == np.int16:
-            audio_float = audio_chunk.astype(np.float32) / 32768.0
-        else:
-            audio_float = audio_chunk
-        return float(np.sqrt(np.mean(audio_float ** 2)))
-    
-    def _update_noise_floor(self, rms: float):
-        """自适应更新噪声底噪估计"""
-        alpha = self.config.noise_floor_alpha
-        if not self._noise_floor_initialized:
-            # 前几个块用于校准噪声底噪
-            self._noise_calibration_chunks += 1
-            if self._noise_calibration_chunks == 1:
-                self._noise_floor = rms
-            else:
-                # 校准期间跳过异常高能量的 chunk（可能用户刚开口），避免底噪被高估
-                if rms < self._noise_floor * 4.0:
-                    self._noise_floor = self._noise_floor * 0.7 + rms * 0.3
-            if self._noise_calibration_chunks >= 8:  # 8 个 chunk (~4.8s) 后完成校准，更稳定
-                self._noise_floor_initialized = True
-                log.debug(f"[VAD] 噪声底噪校准完成: {self._noise_floor:.5f}")
-        else:
-            # 只在静音时缓慢更新噪声底噪
-            if rms < self._noise_floor * 2.0:
-                self._noise_floor = self._noise_floor * (1 - alpha) + rms * alpha
+
+    def flush_buffer(self, max_items: int = 4096) -> int:
+        """
+        清空内部音频队列，避免积压的旧音频影响下一次录音。
+        返回清空的 chunk 数。
+        """
+        n = 0
+        while n < max_items:
+            try:
+                self._audio_buffer.get_nowait()
+                n += 1
+            except queue.Empty:
+                break
+        return n
     
     def detect_speech(self, audio_chunk: np.ndarray) -> bool:
-        """检测是否有语音（自适应阈值）"""
-        rms = self._compute_rms(audio_chunk)
-        self._update_noise_floor(rms)
-        
-        # 动态阈值 = max(固定阈值, 噪声底噪 × 2.5)
-        # 倍率过高会导致正常说话被判为静音（尤其有风扇/空调时）
-        adaptive_threshold = max(self.config.silence_threshold, self._noise_floor * 2.5)
-        return rms > adaptive_threshold
+        """检测是否有语音（由 VAD 后端实现）"""
+        return self._vad.detect_speech(audio_chunk, self.config.sample_rate)
     
     def record_until_silence(
         self,
@@ -216,19 +211,26 @@ class AudioInput:
         """
         if not self._is_listening:
             self.start_listening()
+
+        # 关键：清掉上一轮/空闲期间积压的旧音频，否则会“回放式”地先处理旧 chunk，导致延迟与误判
+        flushed = self.flush_buffer()
+        if flushed:
+            log.debug(f"[AudioIO] flush_buffer: {flushed} chunks")
+        # 每次录音前重置 VAD，避免噪声底噪/状态在多轮之间漂移
+        try:
+            self._vad.reset()
+        except Exception:
+            pass
         
         speech_buffer = []
         is_speaking = False
         silence_start = None
         start_time = time.time()
         
-        # 连续语音块计数（用于防止噪声尖峰误触发）
+        vc = self._vad_config
         consecutive_speech = 0
-        # hangover 计数（语音结束后继续录制几个块）
         hangover_remaining = 0
-        
-        # 预缓冲：保留最近 N 个 chunk，语音开始时回溯，避免开头吃字
-        pre_buffer = deque(maxlen=self.config.pre_buffer_chunks)
+        pre_buffer = deque(maxlen=vc.pre_buffer_chunks)
         
         while self._is_listening:
             chunk = self.get_audio_chunk(timeout=0.5)
@@ -247,9 +249,9 @@ class AudioInput:
             
             if has_speech:
                 consecutive_speech += 1
-                hangover_remaining = self.config.hangover_chunks  # 重置 hangover
+                hangover_remaining = vc.hangover_chunks
                 
-                if not is_speaking and consecutive_speech >= self.config.min_speech_chunks:
+                if not is_speaking and consecutive_speech >= vc.min_speech_chunks:
                     # 连续语音块达到阈值，确认语音开始
                     is_speaking = True
                     silence_start = None
@@ -289,7 +291,7 @@ class AudioInput:
                     
                     if silence_start is None:
                         silence_start = current_time
-                    elif current_time - silence_start > self.config.silence_duration:
+                    elif current_time - silence_start > vc.silence_duration:
                         # 静音超过阈值，语音结束
                         log.debug(f"[VAD] 语音结束 (时长 {current_time - start_time:.1f}s)")
                         if on_speech_end and speech_buffer:

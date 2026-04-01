@@ -26,12 +26,37 @@ src_path = project_root / "src"
 sys.path.insert(0, str(src_path))
 
 
+def _parse_asr_device(argv) -> str:
+    """
+    解析 ASR 设备参数。
+
+    支持:
+    - --asr-device auto
+    - --asr-device cpu
+    - --asr-device cuda
+    - --asr-device cuda:0
+    - --asr-device=<value>
+    """
+    default = "auto"
+    if "--asr-device" in argv:
+        i = argv.index("--asr-device")
+        if i + 1 < len(argv):
+            return argv[i + 1].strip() or default
+        return default
+    for arg in argv:
+        if arg.startswith("--asr-device="):
+            v = arg.split("=", 1)[1].strip()
+            return v or default
+    return default
+
+
 def main():
     # 解析参数
     debug_mode = "--debug" in sys.argv or "-d" in sys.argv
     no_voice = "--no-voice" in sys.argv
     text_mode = "--text" in sys.argv
     text_gui_mode = "--text-gui" in sys.argv
+    asr_device = _parse_asr_device(sys.argv)
     
     print("=" * 60)
     print("        玲 (Liying) - 智能虚拟助手")
@@ -54,7 +79,8 @@ def main():
         launcher = Launcher(
             debug_mode=debug_mode,
             enable_conversation=(not no_voice or text_gui_mode),
-            text_only=text_gui_mode
+            text_only=text_gui_mode,
+            asr_device=asr_device,
         )
         launcher.app.exec()
 
@@ -105,9 +131,15 @@ def run_text_mode(debug_mode: bool):
                 continue
             
             print("🤖 玲: ", end="", flush=True)
-            
-            for chunk in agent.chat(user_input, stream=True):
-                print(chunk, end="", flush=True)
+
+            try:
+                for chunk in agent.chat(user_input, stream=True):
+                    print(chunk, end="", flush=True)
+            except Exception as e:
+                # 网络波动或上游 API 异常时，不要让整个会话崩溃
+                print(f"\n❗ 回复失败：{type(e).__name__}: {e}")
+                print("请检查网络或 API 服务状态，然后重试。\n")
+                continue
             
             print("\n")
             

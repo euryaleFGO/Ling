@@ -20,6 +20,9 @@ wheels/
 .installed.cfg
 *.egg
 
+# Hugging Face 缓存（SER 等模型，可置于项目盘）
+.hf_cache/
+
 # 虚拟环境
 venv/
 env/
@@ -41,6 +44,9 @@ src/models/
 # 旧路径（兼容）
 backtend/models/**/*
 Model/
+# 例外：Live2D Java 包 model 需要提交
+!src/frontend/live2d/src/main/java/com/live2d/model/
+!src/frontend/live2d/src/main/java/com/live2d/model/*
 
 # 日志文件
 logs/

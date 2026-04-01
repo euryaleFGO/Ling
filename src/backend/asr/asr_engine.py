@@ -8,6 +8,8 @@ ASR 引擎 - 基于 FunASR AutoModel 的语音识别接口
 
 import os
 import threading
+import contextlib
+import io
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Union, Optional, Callable
@@ -31,8 +33,8 @@ class ASRConfig:
     device: str = "cpu"            # "cpu" / "cuda:0" 等
     disable_update: bool = True    # 禁止自动下载/更新模型
 
-    # 流式设置
-    chunk_size: List[int] = field(default_factory=lambda: [0, 10, 5])
+    # 流式设置（chunk 越小延迟越低，[0,6,3]=360ms vs [0,10,5]=600ms）
+    chunk_size: List[int] = field(default_factory=lambda: [0, 6, 3])
     encoder_chunk_look_back: int = 4
     decoder_chunk_look_back: int = 1
     sample_rate: int = 16000
@@ -40,6 +42,9 @@ class ASRConfig:
     # VAD 设置
     use_vad: bool = True
     max_end_sil: int = 800         # 最大结尾静音时长 (ms)
+
+    # 日志/输出设置
+    suppress_funasr_progress: bool = True  # 抑制 funasr/tqdm 的 chunk 级进度输出
 
 
 class ASREngine:
@@ -172,6 +177,15 @@ class ASREngine:
         self._model_loaded = True
         print("[ASR] 模型加载完成")
 
+    @contextlib.contextmanager
+    def _quiet_generate(self):
+        """可选抑制 FunASR generate 阶段的进度条与冗余输出。"""
+        if not self.config.suppress_funasr_progress:
+            yield
+            return
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            yield
+
     def _load_offline_model(self):
         """按需加载离线模型（含 VAD，用于整段音频识别）"""
         if self._model_offline is not None:
@@ -203,11 +217,12 @@ class ASREngine:
         self._load_models()
         self._load_offline_model()
 
-        res = self._model_offline.generate(
-            input=str(audio_path),
-            cache={},
-            batch_size_s=300,
-        )
+        # 不显式传 cache，让 FunASR 自己管理内部缓存，避免某些模型期望 cache 中已初始化字段（如 start_idx）而报错
+        with self._quiet_generate():
+            res = self._model_offline.generate(
+                input=str(audio_path),
+                batch_size_s=300,
+            )
 
         if res and len(res) > 0 and "text" in res[0]:
             return res[0]["text"]
@@ -238,10 +253,11 @@ class ASREngine:
             except ImportError:
                 raise ImportError("重采样需要 librosa: pip install librosa")
 
-        res = self._model_offline.generate(
-            input=audio,
-            cache={},
-        )
+        # 这里同样不手动传入 cache，避免离线模型内部对 cache 结构的假设导致 KeyError（如 'start_idx'）
+        with self._quiet_generate():
+            res = self._model_offline.generate(
+                input=audio,
+            )
 
         if res and len(res) > 0 and "text" in res[0]:
             return res[0]["text"]
@@ -288,14 +304,15 @@ class ASREngine:
         if max_val > 2.0:
             audio_chunk = audio_chunk / 32768.0
 
-        res = self._model.generate(
-            input=audio_chunk,
-            cache=self._stream_cache,
-            is_final=False,
-            chunk_size=self.config.chunk_size,
-            encoder_chunk_look_back=self.config.encoder_chunk_look_back,
-            decoder_chunk_look_back=self.config.decoder_chunk_look_back,
-        )
+        with self._quiet_generate():
+            res = self._model.generate(
+                input=audio_chunk,
+                cache=self._stream_cache,
+                is_final=False,
+                chunk_size=self.config.chunk_size,
+                encoder_chunk_look_back=self.config.encoder_chunk_look_back,
+                decoder_chunk_look_back=self.config.decoder_chunk_look_back,
+            )
 
         if res and len(res) > 0 and "text" in res[0]:
             return res[0]["text"]
@@ -323,14 +340,15 @@ class ASREngine:
             if max_val > 2.0:
                 audio_chunk = audio_chunk / 32768.0
 
-        res = self._model.generate(
-            input=audio_chunk,
-            cache=self._stream_cache,
-            is_final=True,
-            chunk_size=self.config.chunk_size,
-            encoder_chunk_look_back=self.config.encoder_chunk_look_back,
-            decoder_chunk_look_back=self.config.decoder_chunk_look_back,
-        )
+        with self._quiet_generate():
+            res = self._model.generate(
+                input=audio_chunk,
+                cache=self._stream_cache,
+                is_final=True,
+                chunk_size=self.config.chunk_size,
+                encoder_chunk_look_back=self.config.encoder_chunk_look_back,
+                decoder_chunk_look_back=self.config.decoder_chunk_look_back,
+            )
 
         self._stream_cache = {}
 

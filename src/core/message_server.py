@@ -10,6 +10,7 @@ Python 后端 → Java Live2D 前端 的实时通信桥梁
   音频RMS:  {"type": "audio_rms",  "rms": 0.45}
   视觉素:   {"type": "viseme",    "openY": 0.5, "form": 0.3}
   情绪:     {"type": "emotion",    "emotion": "neutral"}
+  动作:     {"type": "motion",     "group": "Tap@Body", "index": 0}
   状态:     {"type": "state",      "state": "listening"}
   清除:     {"type": "clear"}
 
@@ -227,6 +228,15 @@ def send_emotion(emotion: str):
     """发送独立的情绪变化"""
     if _server:
         _server.send({"type": "emotion", "emotion": emotion})
+
+
+def send_motion(group: str, index: int = 0):
+    """
+    发送动作指令，由 Agent/LLM 情绪自主触发
+    模型 hiyori 支持: Idle, Tap, Tap@Body, Flick, FlickDown, Flick@Body
+    """
+    if _server:
+        _server.send({"type": "motion", "group": group, "index": index})
 
 
 def send_state(state: str):

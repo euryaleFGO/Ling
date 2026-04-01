@@ -247,9 +247,76 @@ class MemoryExtractor:
     ) -> List[Dict]:
         """
         使用 LLM 提取记忆 (更智能)
-        
-        TODO: 实现 LLM 辅助提取
+
+        Args:
+            messages: 消息列表 [{"role": "user"/"assistant", "content": "..."}]
+            llm_client: LLM 客户端（有 infer 方法）
+
+        Returns:
+            提取的记忆列表 [{"content": "...", "type": "...", "importance": 0.5, "source_text": "..."}]
         """
-        # 这里可以构建 prompt 让 LLM 从对话中提取重要信息
-        # 返回格式化的记忆列表
-        pass
+        if not llm_client:
+            return []
+
+        # 构建提示词
+        prompt = """你是一个记忆提取助手。请从以下对话中提取重要信息，整理成记忆条目。
+
+对话内容：
+"""
+
+        for i, msg in enumerate(messages):
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            role_name = "用户" if role == "user" else "助手"
+            prompt += f"{role_name}：{content}\n"
+
+        prompt += """
+请提取以下类型的记忆：
+1. fact（事实）：用户的身份信息、工作、所在地、年龄等客观事实
+2. preference（偏好）：用户的爱好、喜欢的事物、习惯等
+3. event（事件）：用户提到的重要事件或活动
+4. emotion（情感）：用户的情绪状态
+5. summary（摘要）：对话的主要内容摘要
+
+请以JSON数组格式返回记忆列表，示例：
+[
+  {"content": "用户喜欢编程", "type": "preference", "importance": 0.8, "source_text": "用户说：我喜欢编程"},
+  {"content": "用户今天去面试了", "type": "event", "importance": 0.7, "source_text": "用户说：我今天去面试了"}
+]
+
+注意：
+- 只返回JSON数组，不要其他内容
+- importance 为 0.0-1.0 的浮点数，越重要值越高
+- 如果没有值得记录的信息，返回空数组 []
+- source_text 字段必须是对话中的原文
+"""
+        try:
+            response = llm_client.infer(
+                messages=[{"role": "user", "content": prompt}],
+                stream=False
+            )
+
+            # 解析 LLM 返回的 JSON
+            import json
+            import re
+
+            # 尝试从返回内容中提取 JSON
+            text = response if isinstance(response, str) else str(response)
+            json_match = re.search(r'\[.*\]', text, re.DOTALL)
+            if json_match:
+                memories = json.loads(json_match.group(0))
+                # 验证并清理记忆
+                valid_memories = []
+                for mem in memories:
+                    if isinstance(mem, dict) and mem.get("content"):
+                        valid_memories.append({
+                            "content": str(mem.get("content", "")),
+                            "type": str(mem.get("type", "fact")),
+                            "importance": float(mem.get("importance", 0.5)),
+                            "source_text": str(mem.get("source_text", ""))
+                        })
+                return valid_memories
+            return []
+        except Exception as e:
+            logger.error(f"LLM 记忆提取失败: {e}")
+            return []

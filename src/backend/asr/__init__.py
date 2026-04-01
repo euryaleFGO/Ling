@@ -22,6 +22,13 @@ ASR (Automatic Speech Recognition) 模块
 """
 
 from .asr_engine import ASREngine, ASRConfig
+from .providers import ASRProvider, FunASRProvider, WhisperRemoteProvider
 
-__all__ = ["ASREngine", "ASRConfig"]
+__all__ = [
+    "ASREngine",
+    "ASRConfig",
+    "ASRProvider",
+    "FunASRProvider",
+    "WhisperRemoteProvider",
+]
 __version__ = "2.0.0"

@@ -88,9 +88,23 @@ public class Main {
     
     // 气泡框相关
     private SpeechBubble speechBubble;
-    
+
+    // 动作播放器（Agent 根据 LLM 情绪自主触发，参考 AIRI）
+    private MotionPlayer motionPlayer;
+
     // 表情控制器（情绪映射 + 嘴型同步）
     private ExpressionController expressionController;
+
+    private double lastLoopTime = 0;
+
+    // 用户不交互时自动播放 Idle 动作：
+    // 定义「事件」：对话状态变化为非 idle、收到 LLM/用户触发的动作指令（motion）
+    // 1）无事件满 60 秒后，开始进入“随机动作模式”
+    // 2）在该模式下，每隔 60 秒播放一次随机 Idle 动作
+    private static final long IDLE_EVENT_THRESHOLD_MS = 60_000;      // 无事件多久后开始做动作
+    private static final long IDLE_MOTION_INTERVAL_MS = 60_000;      // 进入后每隔多久做一个动作
+    private long lastEventTimeMs = 0;        // 最近一次「事件」发生时间
+    private long lastAutoMotionTimeMs = 0;   // 最近一次自动 Idle 动作时间
     
     private static final String VERTEX_SHADER = """
         #version 330 core
@@ -301,9 +315,18 @@ public class Main {
         
         // 初始化气泡框
         speechBubble = new SpeechBubble(width, height);
-        
+
+        // 初始化动作播放器
+        motionPlayer = new MotionPlayer(modelPath);
+        if (motionPlayer.loadModelConfig("res/hiyori_free_t08.model3.json")) {
+            System.out.println("[OK] 动作组加载完成");
+        } else {
+            System.out.println("[WARN] 动作组加载失败，将仅使用表情参数");
+        }
+
         // 初始化表情控制器
         expressionController = new ExpressionController();
+        lastLoopTime = glfwGetTime();
     }
     
     private void loop() {
@@ -311,8 +334,56 @@ public class Main {
             Core core = model.getCore();
             if (core != null && core.isInitialized()) {
                 updateModelParameters(core);
-                
+
+                // 检查并播放待触发的动作（Agent 根据 LLM 情绪 / 工具调用）
+                if (speechBubble != null && motionPlayer != null) {
+                    String[] pending = speechBubble.takePendingMotion();
+                    if (pending != null && pending.length >= 1) {
+                        String group = pending[0];
+                        int index = pending.length >= 2 ? Integer.parseInt(pending[1]) : 0;
+                        motionPlayer.playMotion(group, index);
+                        // 这是一个「事件」：收到来自 LLM/用户的明确动作指令
+                        long nowMs = System.currentTimeMillis();
+                        lastEventTimeMs = nowMs;
+                        lastAutoMotionTimeMs = nowMs;  // 重置自动动作计时，避免立刻再次触发
+                    }
+                }
+
+                // 用户不交互时自动播放 Idle 动作：
+                // - 仅当对话状态为 idle
+                // - 且距离最近一次「事件」已超过 IDLE_EVENT_THRESHOLD_MS
+                // - 且距离上一次自动 Idle 动作已超过 IDLE_MOTION_INTERVAL_MS
+                if (speechBubble != null && motionPlayer != null) {
+                    String state = speechBubble.getConversationState();
+                    if (!"idle".equals(state)) {
+                        // 非 idle 状态视为有「事件」发生（在说话 / 处理 / 监听）
+                        long nowMs = System.currentTimeMillis();
+                        lastEventTimeMs = nowMs;
+                    } else {
+                        long nowMs = System.currentTimeMillis();
+                        // 无事件时间已超过阈值，且距离上一次自动动作超过固定间隔
+                        if ((nowMs - lastEventTimeMs) >= IDLE_EVENT_THRESHOLD_MS
+                                && (nowMs - lastAutoMotionTimeMs) >= IDLE_MOTION_INTERVAL_MS) {
+                            int count = motionPlayer.getMotionCount("Idle");
+                            if (count > 0) {
+                                int index = ThreadLocalRandom.current().nextInt(count);
+                                motionPlayer.playMotion("Idle", index);
+                                lastAutoMotionTimeMs = nowMs;
+                            }
+                        }
+                    }
+                }
+
+                // 动作播放（覆盖其控制的参数，如 ParamAngleX/Y、身体等）
+                if (motionPlayer != null) {
+                    double now = glfwGetTime();
+                    double dt = lastLoopTime > 0 ? now - lastLoopTime : 0.016;
+                    lastLoopTime = now;
+                    motionPlayer.update(core, dt);
+                }
+
                 // 从 SpeechBubble 获取情绪 / RMS / Viseme，驱动表情控制器
+                // 始终在动作之后执行，这样情绪/口型可以自然地覆盖并“拉回”状态，避免动作结束时瞬间跳变
                 if (speechBubble != null && expressionController != null) {
                     expressionController.setEmotion(speechBubble.getCurrentEmotion());
                     expressionController.setAudioRms(speechBubble.getAudioRms());
@@ -326,7 +397,7 @@ public class Main {
                     double elapsed = glfwGetTime() - startTime;
                     expressionController.update(core, elapsed);
                 }
-                
+
                 core.update();
             }
             
