@@ -26,13 +26,19 @@ except ImportError:
         def warn(msg): print(msg)
         @staticmethod
         def error(msg): print(msg)
+        @staticmethod
+        def tts(msg): print(msg)
+        @staticmethod
+        def tts_debug(msg): pass
+        @staticmethod
+        def tts_segment(msg): print(msg)
     log = _Fallback()
 
 
 @dataclass
 class RemoteTTSConfig:
     """远程 TTS 配置"""
-    base_url: str = "http://localhost:5001"  # TTS 服务地址
+    base_url: str = ""  # TTS 服务地址（默认从环境变量 REMOTE_TTS_URL 读取）
     timeout: int = 60  # 请求超时（秒）
     use_clone: bool = True  # 使用语音克隆
     spk_id: Optional[str] = None  # 说话人 ID
@@ -48,7 +54,21 @@ class RemoteTTSClient:
     """
     
     def __init__(self, config: RemoteTTSConfig = None):
-        self.config = config or RemoteTTSConfig()
+        if config is None:
+            try:
+                from core.settings import AppSettings
+                s = AppSettings.load()
+                config = RemoteTTSConfig(base_url=s.remote_tts_url)
+            except Exception:
+                config = RemoteTTSConfig(base_url="http://localhost:5001")
+        elif not config.base_url:
+            try:
+                from core.settings import AppSettings
+                s = AppSettings.load()
+                config.base_url = s.remote_tts_url  # type: ignore[misc]
+            except Exception:
+                config.base_url = "http://localhost:5001"  # type: ignore[misc]
+        self.config = config
         self.sample_rate = 22050  # 默认采样率，会从服务端获取
         self._session = requests.Session()
     
@@ -115,7 +135,7 @@ class RemoteTTSClient:
             return None
     
     def generate_audio_streaming(
-        self, 
+        self,
         text: str,
         use_clone: bool = True,
         max_workers: int = 2,
@@ -123,15 +143,18 @@ class RemoteTTSClient:
     ) -> Generator[Tuple[np.ndarray, int, int], None, None]:
         """
         流式生成音频（使用 enqueue/dequeue API）
-        
+
         Args:
             text: 要合成的文本
             use_clone: 是否使用语音克隆（与本地 TTS 接口兼容）
             max_workers: 忽略（服务端控制）
-            
+
         Yields:
-            (audio_data, segment_idx, total_segments) 元组
+            (audio_data, segment_idx, total_segments, visemes) 元组
         """
+        t_start = time.time()
+        text_preview = text[:50] + "..." if len(text) > 50 else text
+
         try:
             # 1. 入队任务
             resp = self._session.post(
@@ -143,60 +166,93 @@ class RemoteTTSClient:
                 },
                 timeout=10
             )
-            
+
             if resp.status_code != 200:
                 log.error(f"[远程TTS] 入队失败: {resp.status_code}")
                 return
-            
+
             data = resp.json()
             job_id = data.get("job_id")
             if not job_id:
                 log.error("[远程TTS] 未获取到 job_id")
                 return
-            
-            log.debug(f"[远程TTS] 任务已提交: {job_id[:8]}...")
-            
+
+            log.tts(f"[远程TTS] 任务已提交: {job_id[:8]}... 文本: {text_preview}")
+
             # 2. 循环获取音频段
             # 服务端语义：200=音频段, 202=暂无数据仍在合成, 204=任务结束, 409=失败
             segment_idx = 0
             poll_count = 0
             first_chunk_deadline = time.time() + 120  # 首段最多等 120 秒
             dequeue_timeout = 10  # 单次轮询等待（秒），避免长时间无提示
+            expected_next = 1  # 期望收到的下一个段编号
+            received_count = 0
+            last_log_time = time.time()
+
             while True:
                 try:
                     if segment_idx == 0 and time.time() > first_chunk_deadline:
                         log.error("[远程TTS] 首段音频等待超时（120s），请检查服务端负载或网络")
                         break
+
+                    # 每 3 秒打印一次等待状态
+                    if time.time() - last_log_time > 3:
+                        log.tts(f"[远程TTS] 等待中... 已收 {received_count} 段，期望下一段 {expected_next}，已等待 {time.time() - t_start:.1f}s")
+                        last_log_time = time.time()
+
                     resp = self._session.get(
                         f"{self.base_url}/tts/dequeue",
                         params={"job_id": job_id, "timeout": dequeue_timeout},
                         timeout=dequeue_timeout + 5
                     )
-                    
+
                     if resp.status_code == 202:
                         # 暂无新段，任务仍在进行，继续轮询
                         poll_count += 1
-                        if poll_count % 3 == 1:
-                            log.debug("[远程TTS] 等待音频合成，请稍候...")
                         continue
                     elif resp.status_code == 204:
                         # 任务已完成且队列已空
+                        log.tts(f"[远程TTS] 服务端返回 204（完成），received={received_count}")
                         break
                     elif resp.status_code == 409:
                         # 任务出错
-                        log.error(f"[远程TTS] 任务出错: {resp.json().get('error')}")
+                        err_msg = resp.json().get("error") if resp.content else "unknown"
+                        log.error(f"[远程TTS] 任务出错: {err_msg}")
                         break
                     elif resp.status_code != 200:
                         log.error(f"[远程TTS] 获取音频失败: {resp.status_code}")
                         break
-                    
-                    # 解析音频段
-                    segment_idx = int(resp.headers.get("X-Segment-Idx", segment_idx + 1))
+
+                    # 解析服务端返回的段编号
+                    raw_seg = resp.headers.get("X-Segment-Idx", "0")
+                    try:
+                        seg_from_header = int(raw_seg)
+                    except ValueError:
+                        seg_from_header = segment_idx + 1
+
                     sample_rate = int(resp.headers.get("X-Sample-Rate", 22050))
                     self.sample_rate = sample_rate
-                    
                     total_segments = int(resp.headers.get("X-Segment-Total", -1))
-                    
+
+                    audio_len = len(resp.content)
+
+                    # 段丢失检测
+                    if seg_from_header != expected_next:
+                        log.tts_segment(
+                            f"[TTS段丢失] 期望段 {expected_next}，实际收到段 {seg_from_header}，"
+                            f"已收 {received_count}/{total_segments}，丢失段可能是 {expected_next}"
+                        )
+                        # 不跳段，继续处理（段可能在缓冲区里后面补上）
+                    else:
+                        log.tts_segment(
+                            f"[TTS段OK] 段 {seg_from_header}/{total_segments}，音频 {audio_len} bytes，"
+                            f"耗时 {time.time() - t_start:.2f}s"
+                        )
+
+                    segment_idx = seg_from_header
+                    expected_next = segment_idx + 1
+                    received_count += 1
+
                     # 解析 Viseme 数据（Rhubarb Lip Sync，可选）
                     visemes = None
                     viseme_b64 = resp.headers.get("X-Viseme-Data")
@@ -206,16 +262,26 @@ class RemoteTTSClient:
                             visemes = _json.loads(base64.b64decode(viseme_b64).decode('utf-8'))
                         except Exception:
                             pass
-                    
+
                     wav_bytes = resp.content
                     audio = self._wav_bytes_to_array(wav_bytes)
                     yield (audio, segment_idx, total_segments, visemes)
-                    
+
                 except requests.Timeout:
-                    log.debug("[远程TTS] 等待音频超时，继续...")
+                    log.tts("[远程TTS] 等待音频超时，继续轮询...")
                     continue
-            
-            log.debug("[远程TTS] 流式合成完成")
+
+            # 结束时打印汇总
+            elapsed = time.time() - t_start
+            log.tts(f"[远程TTS] 流式合成完成。收到 {received_count}/{total_segments} 段，总耗时 {elapsed:.2f}s")
+
+            if received_count < total_segments:
+                log.tts(f"[TTS段警告] 丢失段！期望 {total_segments} 段，实际仅收到 {received_count} 段")
+
+        except Exception as e:
+            log.error(f"[远程TTS] 流式错误: {e}")
+            import traceback
+            traceback.print_exc()
             
         except Exception as e:
             log.error(f"[远程TTS] 流式错误: {e}")

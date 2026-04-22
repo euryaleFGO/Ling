@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional, Union, List
 
 import numpy as np
 
@@ -72,13 +72,27 @@ class ASRProvider(ABC):
 class FunASRProvider(ASRProvider):
     """本地 FunASR Paraformer 流式识别"""
     
-    def __init__(self, model_dir: str = None, vad_model: str = None, device: str = "cpu"):
+    def __init__(
+        self,
+        model_dir: str = None,
+        vad_model: str = None,
+        device: str = "cpu",
+        chunk_size: Optional[List[int]] = None,
+        encoder_chunk_look_back: Optional[int] = None,
+        decoder_chunk_look_back: Optional[int] = None,
+    ):
         from .asr_engine import ASREngine, ASRConfig
         config = ASRConfig(
             model_dir=model_dir,
             vad_model=vad_model,
             device=device,
         )
+        if chunk_size:
+            config.chunk_size = list(chunk_size)
+        if encoder_chunk_look_back is not None:
+            config.encoder_chunk_look_back = int(encoder_chunk_look_back)
+        if decoder_chunk_look_back is not None:
+            config.decoder_chunk_look_back = int(decoder_chunk_look_back)
         self._engine = ASREngine(config=config)
     
     @property

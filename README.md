@@ -24,6 +24,45 @@
 
 ---
 
+## 🔧 可复刻配置（去硬编码）
+
+项目关键运行参数已统一改为**环境变量可配置**（均有默认值），避免本机路径/端口硬编码导致他人无法复现。
+
+### MongoDB
+- **MONGODB_URI**：默认 `mongodb://localhost:27017`
+- **MONGODB_DB**：默认 `liying_db`
+
+初始化数据库索引与最小默认数据：
+
+```bash
+python scripts/setup_database.py --seed
+```
+
+### WebSocket 消息服务（Python → Live2D）
+- **LIYING_WS_HOST**：默认 `localhost`
+- **LIYING_WS_PORT**：默认 `8765`
+
+Java Live2D 端支持（任选其一）：
+- **LIYING_WS_URL**：例如 `ws://127.0.0.1:8765`
+- 或 **LIYING_WS_HOST** / **LIYING_WS_PORT**
+
+### 远程 TTS（可选）
+- **REMOTE_TTS_URL**：默认 `http://localhost:5001`
+- **LIYING_TTS_REMOTE_URL**：对话系统使用的远程 TTS 地址（不设置则自动回退本地 TTS）
+- **LIYING_TTS_SPK_ID**：默认 `玲`
+
+### 模型与数据目录
+- **LIYING_MODELS_DIR**：默认 `./models`
+- **LIYING_ASR_MODEL_DIR**：默认 `./models/ASR/paraformer-zh-streaming`
+- **LIYING_ASR_VAD_DIR**：默认 `./models/ASR/fsmn-vad`
+- **LIYING_TTS_MODEL_DIR**：默认 `./models/TTS/CosyVoice2-0.5B`
+- **LIYING_CHROMA_DIR**：默认 `./data/chroma_data`
+
+### Windows 下直接启动 mongod（可选）
+若你不想把 MongoDB 安装成 Windows 服务，可设置：
+- **MONGOD_EXE**：例如 `C:\MongoDB\bin\mongod.exe`
+- **MONGOD_CFG**：例如 `C:\MongoDB\mongod.cfg`（可不填）
+
 ## 🎯 项目简介
 
 **玲 (Liying)** 是一个智能虚拟助手系统，整合了以下核心功能：
@@ -62,6 +101,17 @@
 - ✅ **消息队列**：基于 HTTP 的消息传递，解耦各模块
 - ✅ **自动启动**：一键启动所有服务，包括 MongoDB 和 Live2D
 - ✅ **错误恢复**：完善的错误处理和日志记录
+
+### 5. 多说话人识别（Diarization，离线）
+- ✅ **多说话人切分与聚类**：对一段录音自动切分语音片段，并为每段分配 `speaker_1 / speaker_2 / ...`
+- ✅ **复用项目 SV 声纹模型**：使用 `core/SVEngine` 提取声纹 embedding，无需额外 HF Token
+- ✅ **脚本一键输出 JSON**：便于后续与字幕/ASR 对齐或可视化
+
+使用示例：
+
+```bash
+python scripts/diarize_audio.py --audio path/to/audio.wav --out diarization.json
+```
 
 ---
 

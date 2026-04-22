@@ -167,17 +167,17 @@ class WebSocketServer:
 _server: Optional[WebSocketServer] = None
 
 
-def create_server(port: int = 8765) -> WebSocketServer:
+def create_server(port: int = 8765, host: str = "localhost") -> WebSocketServer:
     """创建 WebSocket 服务器实例（不启动）"""
     global _server
-    _server = WebSocketServer(port=port)
+    _server = WebSocketServer(host=host, port=port)
     return _server
 
 
-def start_server(port: int = 8765) -> WebSocketServer:
+def start_server(port: int = 8765, host: str = "localhost") -> WebSocketServer:
     """创建并立即启动服务器（后台线程）"""
     global _server
-    _server = WebSocketServer(port=port)
+    _server = WebSocketServer(host=host, port=port)
     _server.start()
     return _server
 

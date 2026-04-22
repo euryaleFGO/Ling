@@ -56,7 +56,12 @@ class SpeakerPage(QWidget):
         if str(self.matcha_path) not in sys.path:
             sys.path.insert(0, str(self.matcha_path))
 
-        self.model_dir = self.project_root / "models" / "TTS" / "CosyVoice2-0.5B"
+        try:
+            from core.settings import AppSettings
+            s = AppSettings.load()
+            self.model_dir = s.tts_model_dir
+        except Exception:
+            self.model_dir = self.project_root / "models" / "TTS" / "CosyVoice2-0.5B"
         self.spk2info_path = self.model_dir / "spk2info.pt"
 
         self._tts = None
