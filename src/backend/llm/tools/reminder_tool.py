@@ -59,9 +59,16 @@ class ReminderManager:
         
         try:
             if db is None:
-                from pymongo import MongoClient
-                client = MongoClient("mongodb://localhost:27017/", serverSelectionTimeoutMS=3000)
-                db = client["liying_db"]
+                # 优先复用项目统一 MongoDB 配置
+                try:
+                    from backend.llm.database.mongo_client import get_db
+                    db = get_db()
+                except Exception:
+                    from pymongo import MongoClient
+                    from core.settings import AppSettings
+                    s = AppSettings.load()
+                    client = MongoClient(s.mongodb_uri, serverSelectionTimeoutMS=3000)
+                    db = client[s.mongodb_db]
             
             self._db = db
             self._collection = db["reminders"]

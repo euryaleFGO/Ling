@@ -4,6 +4,8 @@ __pycache__/
 *$py.class
 *.so
 .Python
+*.pyo
+*.pyd
 build/
 develop-eggs/
 dist/
@@ -19,6 +21,12 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.tox/
 
 # Hugging Face 缓存（SER 等模型，可置于项目盘）
 .hf_cache/
@@ -37,6 +45,12 @@ ENV/
 *~
 .DS_Store
 
+# 本地/缓存/临时收纳（提交前清理用）
+Trash/
+.claude/settings.local.json
+.modelscope_cache/
+~$$*.vsdx
+
 # 模型文件（太大，不应上传）
 models/
 src/models/
@@ -54,6 +68,7 @@ logs/
 
 # 数据库文件
 data/chroma_data/
+src/data/chroma_data/
 *.sqlite3
 *.db
 
@@ -70,6 +85,7 @@ audio_output/
 
 # 编译文件
 frontend/Live2DPet/target/
+src/frontend/live2d/target/
 *.class
 
 # 个人数据（可选，如果不想上传）

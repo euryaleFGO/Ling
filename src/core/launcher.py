@@ -16,6 +16,7 @@ sys.path.insert(0, str(src_path))
 
 from core.log import log, set_debug
 from gui.main_window import MainWindow
+from core.settings import AppSettings
 
 class Launcher:
     def __init__(self, debug_mode=False, enable_conversation=True, text_only=False, asr_device="auto"):
@@ -119,6 +120,20 @@ class Launcher:
     def _is_mongodb_running(self):
         """检查 MongoDB 是否在运行（通过进程和端口）"""
         try:
+            s = AppSettings.load()
+            # 仅当使用本地默认端口时才做端口监听判断（避免误判远程/自定义端口）
+            expected_port = 27017
+            try:
+                if s.mongodb_uri:
+                    # 简单解析 mongodb://host:port
+                    if "://" in s.mongodb_uri:
+                        tail = s.mongodb_uri.split("://", 1)[1]
+                        host_port = tail.split("/", 1)[0]
+                        if ":" in host_port:
+                            expected_port = int(host_port.rsplit(":", 1)[1])
+            except Exception:
+                expected_port = 27017
+
             # 检查进程
             result = subprocess.run(
                 ["tasklist", "/FI", "IMAGENAME eq mongod.exe"],
@@ -134,7 +149,7 @@ class Launcher:
                     text=True,
                     timeout=5
                 )
-                if ":27017" in port_check.stdout and "LISTENING" in port_check.stdout:
+                if f":{expected_port}" in port_check.stdout and "LISTENING" in port_check.stdout:
                     return True
         except Exception:
             pass
@@ -142,9 +157,15 @@ class Launcher:
 
     def _start_mongodb_process(self):
         """启动 MongoDB 进程"""
-        mongodb_path = Path("E:/MongoDB")
-        mongod_exe = mongodb_path / "bin" / "mongod.exe"
-        config_file = mongodb_path / "mongod.cfg"
+        # 不再硬编码本机路径：允许用户通过环境变量指定 mongod 与配置
+        mongod_exe_env = os.environ.get("MONGOD_EXE", "").strip()
+        mongod_cfg_env = os.environ.get("MONGOD_CFG", "").strip()
+        if not mongod_exe_env:
+            log.error("未设置 MONGOD_EXE，无法直接启动 MongoDB 进程；请先安装并启动 MongoDB 服务，或设置该环境变量。")
+            return False
+
+        mongod_exe = Path(mongod_exe_env)
+        config_file = Path(mongod_cfg_env) if mongod_cfg_env else None
 
         if not mongod_exe.exists():
             log.error(f"MongoDB 可执行文件不存在: {mongod_exe}")
@@ -152,10 +173,11 @@ class Launcher:
 
         try:
             # 使用 Start-Process 在后台启动，隐藏窗口
-            subprocess.run([
-                "powershell", "-NoProfile", "-Command",
-                f"Start-Process -FilePath '{mongod_exe}' -ArgumentList '--config', '{config_file}' -WindowStyle Hidden"
-            ], timeout=10)
+            if config_file and config_file.exists():
+                arg = f\"Start-Process -FilePath '{mongod_exe}' -ArgumentList '--config', '{config_file}' -WindowStyle Hidden\"
+            else:
+                arg = f\"Start-Process -FilePath '{mongod_exe}' -WindowStyle Hidden\"
+            subprocess.run(["powershell", "-NoProfile", "-Command", arg], timeout=10)
             
             # 等待几秒让 MongoDB 启动
             log.debug("等待 MongoDB 启动...")
@@ -217,12 +239,12 @@ class Launcher:
                 from core.conversation_manager import ConversationManager, ConversationConfig
                 
                 config = ConversationConfig(
-                    user_id="default_user",
+                    user_id=os.environ.get("LIYING_USER_ID", "default_user"),
                     use_vad=True,
                     silence_duration=0.55,
                     asr_device=self.asr_device,
-                    tts_remote_url="http://localhost:18888",  # 远程 TTS（需先开 SSH 隧道）
-                    tts_spk_id="玲",  # 使用已注册的说话人
+                    tts_remote_url=os.environ.get("LIYING_TTS_REMOTE_URL") or None,
+                    tts_spk_id=os.environ.get("LIYING_TTS_SPK_ID", "玲"),
                     use_text_input=self.text_only,  # 文字输入模式
                 )
                 
@@ -496,14 +518,15 @@ class Launcher:
         """后台启动 WebSocket 消息服务（端口 8765），供 Live2D 前端实时接收 AI 回复"""
         try:
             from core.message_server import create_server
-            self._message_server = create_server(8765)
+            s = AppSettings.load()
+            self._message_server = create_server(s.ws_port, host=s.ws_host)
             self._message_server_thread = threading.Thread(
                 target=self._message_server.serve_forever,
                 daemon=True,
                 name="WebSocketServerThread",
             )
             self._message_server_thread.start()
-            log.debug("消息服务(WebSocket)已启动: ws://localhost:8765")
+            log.debug(f"消息服务(WebSocket)已启动: ws://{self._message_server.host}:{self._message_server.port}")
         except Exception as e:
             log.error(f"消息服务启动失败: {e}")
 

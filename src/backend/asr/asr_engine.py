@@ -33,8 +33,9 @@ class ASRConfig:
     device: str = "cpu"            # "cpu" / "cuda:0" 等
     disable_update: bool = True    # 禁止自动下载/更新模型
 
-    # 流式设置（chunk 越小延迟越低，[0,6,3]=360ms vs [0,10,5]=600ms）
-    chunk_size: List[int] = field(default_factory=lambda: [0, 6, 3])
+    # 流式设置（[0, 10, 5]=600ms，与 Paraformer 训练配置一致，精度最佳）
+    # 小值延迟更低但精度下降: [0, 8, 4]=480ms, [0, 6, 3]=360ms
+    chunk_size: List[int] = field(default_factory=lambda: [0, 10, 5])
     encoder_chunk_look_back: int = 4
     decoder_chunk_look_back: int = 1
     sample_rate: int = 16000
@@ -148,6 +149,30 @@ class ASREngine:
         # 如果本地找不到，返回 ModelScope 模型名让 AutoModel 自动下载
         return model_name
 
+    @staticmethod
+    def _normalize_audio_array(audio: np.ndarray) -> np.ndarray:
+        """统一归一化音频为 float32 [-1, 1]，并处理空输入。"""
+        if audio is None:
+            return np.zeros(0, dtype=np.float32)
+
+        if not isinstance(audio, np.ndarray):
+            audio = np.asarray(audio)
+
+        if audio.size == 0:
+            return np.zeros(0, dtype=np.float32)
+
+        if audio.dtype == np.int16:
+            audio = audio.astype(np.float32) / 32768.0
+        elif audio.dtype != np.float32:
+            audio = audio.astype(np.float32)
+
+        # 检查值域，如果偶然收到未归一化的 float32 数据
+        max_val = float(np.max(np.abs(audio))) if audio.size else 0.0
+        if max_val > 2.0:
+            audio = audio / 32768.0
+
+        return audio
+
     def _load_models(self):
         """延迟加载流式模型（不含 VAD，VAD 由外部 record_until_silence 处理）"""
         if self._model_loaded:
@@ -179,12 +204,30 @@ class ASREngine:
 
     @contextlib.contextmanager
     def _quiet_generate(self):
-        """可选抑制 FunASR generate 阶段的进度条与冗余输出。"""
+        """可选抑制 FunASR generate 阶段的进度条、日志与冗余输出。"""
         if not self.config.suppress_funasr_progress:
             yield
             return
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            yield
+        import logging
+        # FunASR/tqdm 可能使用 logging 而非 stdout/stderr，需同时抑制
+        handlers_to_remove = []
+        for logger_name in ("funasr", "torch", "onnxruntime", ""):
+            logger = logging.getLogger(logger_name)
+            for h in logger.handlers[:]:
+                logger.removeHandler(h)
+                handlers_to_remove.append((logger, h))
+        null_handler = logging.NullHandler()
+        for logger_name in ("funasr", "torch", "onnxruntime", ""):
+            logging.getLogger(logger_name).addHandler(null_handler)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                yield
+        finally:
+            for logger_name in ("funasr", "torch", "onnxruntime", ""):
+                logger = logging.getLogger(logger_name)
+                logger.removeHandler(null_handler)
+            for logger, handler in handlers_to_remove:
+                logger.addHandler(handler)
 
     def _load_offline_model(self):
         """按需加载离线模型（含 VAD，用于整段音频识别）"""
@@ -235,15 +278,9 @@ class ASREngine:
         self._load_models()
         self._load_offline_model()
 
-        # 确保归一化到 float32 [-1, 1]
-        if audio.dtype == np.int16:
-            audio = audio.astype(np.float32) / 32768.0
-        elif audio.dtype != np.float32:
-            audio = audio.astype(np.float32)
-        
-        max_val = np.max(np.abs(audio))
-        if max_val > 2.0:
-            audio = audio / 32768.0
+        audio = self._normalize_audio_array(audio)
+        if audio.size == 0:
+            return ""
 
         # 重采样（如需要）
         if sample_rate and sample_rate != self.config.sample_rate:
@@ -293,16 +330,9 @@ class ASREngine:
         if not self._model_loaded:
             self._load_models()
 
-        # 确保数据为 float32 且在 [-1, 1] 范围
-        if audio_chunk.dtype == np.int16:
-            audio_chunk = audio_chunk.astype(np.float32) / 32768.0
-        elif audio_chunk.dtype != np.float32:
-            audio_chunk = audio_chunk.astype(np.float32)
-        
-        # 检查值域，如果偶然收到未归一化的 float32 数据
-        max_val = np.max(np.abs(audio_chunk))
-        if max_val > 2.0:
-            audio_chunk = audio_chunk / 32768.0
+        audio_chunk = self._normalize_audio_array(audio_chunk)
+        if audio_chunk.size == 0:
+            return ""
 
         with self._quiet_generate():
             res = self._model.generate(
@@ -331,14 +361,9 @@ class ASREngine:
         if audio_chunk is None:
             audio_chunk = np.zeros(16 * 60, dtype=np.float32)
         else:
-            # 确保归一化
-            if audio_chunk.dtype == np.int16:
-                audio_chunk = audio_chunk.astype(np.float32) / 32768.0
-            elif audio_chunk.dtype != np.float32:
-                audio_chunk = audio_chunk.astype(np.float32)
-            max_val = np.max(np.abs(audio_chunk))
-            if max_val > 2.0:
-                audio_chunk = audio_chunk / 32768.0
+            audio_chunk = self._normalize_audio_array(audio_chunk)
+            if audio_chunk.size == 0:
+                audio_chunk = np.zeros(16 * 60, dtype=np.float32)
 
         with self._quiet_generate():
             res = self._model.generate(

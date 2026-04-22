@@ -43,11 +43,18 @@ public class SpeechBubble {
     
     private static final long MESSAGE_TIMEOUT_MS = 10000; // 10秒
     private static final float FADE_SPEED = 0.05f;
-    private static final int BUBBLE_WIDTH = 400;
-    private static final int BUBBLE_HEIGHT = 120;
-    private static final int BUBBLE_PADDING = 15;
+    // 维持“老版本固定矩形”的稳定渲染模型，只做可读性/排版优化
+    private static final int BUBBLE_WIDTH = 520;
+    private static final int BUBBLE_MIN_HEIGHT = 140;
+    private static final int BUBBLE_PADDING = 16;
     private static final int BUBBLE_X = 50;
     private static final int BUBBLE_Y = 50;
+    private static final int BUBBLE_BOTTOM_MARGIN = 80; // 距窗口底部保留边距（防止气泡盖满屏）
+    private static final int TEXT_FONT_SIZE = 24;
+    private static final int TEXT_BITMAP_PADDING = 6; // AWT 文本位图留白，避免抗锯齿/边缘裁切
+
+    // 气泡高度：随文本行数自适应（宽度仍保持固定，稳定）
+    private int computedBubbleHeight = BUBBLE_MIN_HEIGHT;
     
     private OkHttpClient httpClient;
     private ScheduledExecutorService scheduler;
@@ -163,28 +170,16 @@ public class SpeechBubble {
         
         glBindVertexArray(bubbleVAO);
         glBindBuffer(GL_ARRAY_BUFFER, bubbleVBO);
-        
-        // 气泡框矩形顶点（两个三角形组成一个矩形）
-        float[] vertices = {
-            // 第一个三角形
-            BUBBLE_X, BUBBLE_Y,
-            BUBBLE_X + BUBBLE_WIDTH, BUBBLE_Y,
-            BUBBLE_X, BUBBLE_Y + BUBBLE_HEIGHT,
-            // 第二个三角形
-            BUBBLE_X + BUBBLE_WIDTH, BUBBLE_Y,
-            BUBBLE_X + BUBBLE_WIDTH, BUBBLE_Y + BUBBLE_HEIGHT,
-            BUBBLE_X, BUBBLE_Y + BUBBLE_HEIGHT
-        };
-        
-        FloatBuffer vertexBuffer = BufferUtils.createFloatBuffer(vertices.length);
-        vertexBuffer.put(vertices);
-        vertexBuffer.flip();
-        
-        glBufferData(GL_ARRAY_BUFFER, vertexBuffer, GL_STATIC_DRAW);
+
+        // 先占位，后续通过 updateBubbleGeometry() 动态写入高度
+        glBufferData(GL_ARRAY_BUFFER, 6 * 2 * Float.BYTES, GL_DYNAMIC_DRAW);
         glVertexAttribPointer(0, 2, GL_FLOAT, false, 2 * Float.BYTES, 0);
         glEnableVertexAttribArray(0);
         
         glBindVertexArray(0);
+
+        // 初始化一次几何（默认高度）
+        updateBubbleGeometry();
         
         // 初始化文本渲染
         initTextRenderer();
@@ -223,7 +218,7 @@ public class SpeechBubble {
         }
         
         // 使用 Java AWT 生成文本图像
-        int fontSize = 20;
+        int fontSize = TEXT_FONT_SIZE;
         Font font = new Font("Microsoft YaHei", Font.PLAIN, fontSize);
         
         // 计算文本尺寸
@@ -232,8 +227,9 @@ public class SpeechBubble {
         g2d.setFont(font);
         FontMetrics fm = g2d.getFontMetrics();
         
-        // 文本换行处理
-        String[] lines = wrapText(text, BUBBLE_WIDTH - BUBBLE_PADDING * 2, fontSize);
+        // 文本换行处理（基于真实测宽，支持中文无空格断行，并保留原始换行符）
+        int textAreaMaxWidth = BUBBLE_WIDTH - BUBBLE_PADDING * 2;
+        String[] lines = wrapTextByMetrics(text, fm, textAreaMaxWidth);
         int maxWidth = 0;
         for (String line : lines) {
             int width = fm.stringWidth(line);
@@ -249,9 +245,17 @@ public class SpeechBubble {
         // 确保尺寸合理
         maxWidth = Math.max(maxWidth, 100);
         totalHeight = Math.max(totalHeight, lineHeight);
+
+        // 根据文本高度自适应气泡高度（保留上下 padding，并根据窗口高度动态上限）
+        int neededBubbleHeight = totalHeight + BUBBLE_PADDING * 2;
+        // 最大高度动态取：窗口高度 - 顶部位置 - 底部边距
+        int maxBubbleHeight = Math.max(BUBBLE_MIN_HEIGHT, windowHeight - BUBBLE_Y - BUBBLE_BOTTOM_MARGIN);
+        computedBubbleHeight = Math.max(BUBBLE_MIN_HEIGHT, Math.min(maxBubbleHeight, neededBubbleHeight));
+        updateBubbleGeometry();
         
-        // 创建文本图像
-        BufferedImage textImage = new BufferedImage(maxWidth, totalHeight, BufferedImage.TYPE_INT_ARGB);
+        // 创建文本图像（加 padding 防止描边/抗锯齿被裁切）
+        int pad = TEXT_BITMAP_PADDING;
+        BufferedImage textImage = new BufferedImage(maxWidth + pad * 2, totalHeight + pad * 2, BufferedImage.TYPE_INT_ARGB);
         g2d = textImage.createGraphics();
         g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g2d.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
@@ -259,9 +263,9 @@ public class SpeechBubble {
         g2d.setColor(java.awt.Color.WHITE);
         
         // 绘制文本
-        int textY = fm.getAscent();
+        int textY = pad + fm.getAscent();
         for (String line : lines) {
-            g2d.drawString(line, 0, textY);
+            g2d.drawString(line, pad, textY);
             textY += lineHeight;
         }
         
@@ -310,6 +314,9 @@ public class SpeechBubble {
         glGetIntegerv(GL_VERTEX_ARRAY_BINDING, currentVAO);
         int[] currentTexture = new int[1];
         glGetIntegerv(GL_TEXTURE_BINDING_2D, currentTexture);
+        boolean scissorEnabled = glIsEnabled(GL_SCISSOR_TEST);
+        int[] scissorBox = new int[4];
+        glGetIntegerv(GL_SCISSOR_BOX, scissorBox);
         
         // 使用文本着色器
         glUseProgram(textShaderProgram);
@@ -325,6 +332,14 @@ public class SpeechBubble {
         if (textColorLoc >= 0) {
             glUniform4f(textColorLoc, 1.0f, 1.0f, 1.0f, alpha);
         }
+
+        // 裁剪：保证文字不会溢出气泡框（GL 坐标系原点在左下，需要换算）
+        glEnable(GL_SCISSOR_TEST);
+        int scX = BUBBLE_X + BUBBLE_PADDING;
+        int scY = windowHeight - (BUBBLE_Y + computedBubbleHeight - BUBBLE_PADDING);
+        int scW = Math.max(0, BUBBLE_WIDTH - BUBBLE_PADDING * 2);
+        int scH = Math.max(0, computedBubbleHeight - BUBBLE_PADDING * 2);
+        glScissor(scX, scY, scW, scH);
         
         // 计算文本位置（在气泡框内）
         float textX = BUBBLE_X + BUBBLE_PADDING;
@@ -381,6 +396,12 @@ public class SpeechBubble {
         
         // 绘制
         glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        // 恢复 scissor 状态
+        if (!scissorEnabled) {
+            glDisable(GL_SCISSOR_TEST);
+        }
+        glScissor(scissorBox[0], scissorBox[1], scissorBox[2], scissorBox[3]);
         
         // 恢复状态
         glBindTexture(GL_TEXTURE_2D, currentTexture[0]);
@@ -498,8 +519,20 @@ public class SpeechBubble {
     // ============================================================
 
     private void startWebSocketClient() {
+        // 可通过环境变量覆盖（方便复刻与自定义端口/主机）：
+        // - LIYING_WS_URL=ws://127.0.0.1:8765
+        // - 或 LIYING_WS_HOST / LIYING_WS_PORT
+        String wsUrl = System.getenv("LIYING_WS_URL");
+        if (wsUrl == null || wsUrl.isBlank()) {
+            String host = System.getenv("LIYING_WS_HOST");
+            String port = System.getenv("LIYING_WS_PORT");
+            host = (host == null || host.isBlank()) ? "localhost" : host.trim();
+            port = (port == null || port.isBlank()) ? "8765" : port.trim();
+            wsUrl = "ws://" + host + ":" + port;
+        }
+
         Request request = new Request.Builder()
-                .url("ws://localhost:8765")
+                .url(wsUrl)
                 .build();
 
         httpClient.newWebSocket(request, new WebSocketListener() {
@@ -727,6 +760,69 @@ public class SpeechBubble {
             }
         }
         return lines.toArray(new String[0]);
+    }
+
+    /**
+     * 基于 FontMetrics 的真实测宽换行。
+     * - 支持中文/日文等无空格文本
+     * - 保留原始换行符
+     */
+    private String[] wrapTextByMetrics(String text, FontMetrics fm, int maxWidthPx) {
+        if (text == null) {
+            return new String[]{""};
+        }
+        List<String> out = new ArrayList<>();
+        String[] paragraphs = text.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1);
+        for (String para : paragraphs) {
+            if (para.isEmpty()) {
+                out.add("");
+                continue;
+            }
+            StringBuilder line = new StringBuilder();
+            int lineW = 0;
+            for (int i = 0; i < para.length(); i++) {
+                char ch = para.charAt(i);
+                int cw = fm.charWidth(ch);
+                if (line.length() == 0 && cw > maxWidthPx) {
+                    out.add(String.valueOf(ch));
+                    continue;
+                }
+                if (lineW + cw > maxWidthPx && line.length() > 0) {
+                    out.add(line.toString());
+                    line.setLength(0);
+                    lineW = 0;
+                }
+                line.append(ch);
+                lineW += cw;
+            }
+            if (line.length() > 0) {
+                out.add(line.toString());
+            }
+        }
+        return out.toArray(new String[0]);
+    }
+
+    private void updateBubbleGeometry() {
+        float x = BUBBLE_X;
+        float y = BUBBLE_Y;
+        float w = BUBBLE_WIDTH;
+        float h = computedBubbleHeight;
+
+        float[] vertices = {
+                x, y,
+                x + w, y,
+                x, y + h,
+                x + w, y,
+                x + w, y + h,
+                x, y + h
+        };
+
+        FloatBuffer vertexBuffer = BufferUtils.createFloatBuffer(vertices.length);
+        vertexBuffer.put(vertices).flip();
+
+        glBindBuffer(GL_ARRAY_BUFFER, bubbleVBO);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, vertexBuffer);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
 }
 

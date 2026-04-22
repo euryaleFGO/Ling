@@ -53,7 +53,7 @@ class AudioConfig:
     sample_rate: int = 16000      # 采样率
     channels: int = 1              # 声道数
     dtype: str = "float32"         # 数据类型（float32 值域 [-1,1]，ASR 模型需要）
-    chunk_size: int = 5760          # 每次读取的样本数 (360ms at 16kHz，匹配 Paraformer chunk [0,6,3])
+    chunk_size: int = 9600          # 每次读取的样本数 (600ms at 16kHz，匹配 Paraformer chunk [0,10,5])
     max_duration: float = 30.0       # 最大录音时长（秒）
     # VAD 配置（可用 VADConfig 或兼容的 kwargs）
     vad_config: Optional[VADConfig] = None

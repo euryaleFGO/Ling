@@ -3,7 +3,6 @@
 支持对话记录查看、记忆管理、搜索等功能
 """
 import sys
-sys.path.insert(0, 'e:/Avalon/Chaldea/Liying')
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
@@ -353,7 +352,7 @@ class DatabasePage(QWidget):
             
             conv_count = db.conversations.count_documents({})
             msg_count = sum(len(c.get('messages', [])) for c in db.conversations.find())
-            mem_count = db.memories.count_documents({})
+            mem_count = db.long_term_memory.count_documents({})
             
             self.stats_label.setText(
                 f"📊 {conv_count} 个会话 | {msg_count} 条消息 | {mem_count} 条记忆"
@@ -435,7 +434,7 @@ class DatabasePage(QWidget):
             from backend.llm.database import get_db
             db = get_db()
             
-            memories = list(db.memories.find().sort("created_at", -1).limit(100))
+            memories = list(db.long_term_memory.find().sort("created_at", -1).limit(100))
             self.all_memories = memories
             
             self.populate_memory_table(memories)
@@ -674,7 +673,7 @@ class DatabasePage(QWidget):
             try:
                 from backend.llm.database import get_db
                 db = get_db()
-                db.memories.delete_one({"memory_id": memory_id})
+                db.long_term_memory.delete_one({"memory_id": memory_id})
                 self.load_data()
             except Exception as e:
                 QMessageBox.critical(self, "错误", f"删除失败: {e}")
@@ -705,7 +704,7 @@ class DatabasePage(QWidget):
                         memory_ids.append(self.all_memories[row].get('memory_id'))
                 
                 if memory_ids:
-                    db.memories.delete_many({"memory_id": {"$in": memory_ids}})
+                    db.long_term_memory.delete_many({"memory_id": {"$in": memory_ids}})
                 
                 QMessageBox.information(self, "成功", f"已删除 {len(memory_ids)} 条记忆")
                 self.load_data()
@@ -724,7 +723,7 @@ class DatabasePage(QWidget):
             try:
                 from backend.llm.database import get_db
                 db = get_db()
-                result = db.memories.delete_many({})
+                result = db.long_term_memory.delete_many({})
                 QMessageBox.information(self, "成功", f"已删除 {result.deleted_count} 条记忆")
                 self.load_data()
             except Exception as e:
@@ -791,7 +790,7 @@ class DatabasePage(QWidget):
                     db = get_db()
                     
                     db.conversations.delete_many({})
-                    db.memories.delete_many({})
+                    db.long_term_memory.delete_many({})
                     db.knowledge_base.delete_many({})
                     db.character_settings.delete_many({})
                     db.user_profiles.delete_many({})

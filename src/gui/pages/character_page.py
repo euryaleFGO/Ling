@@ -2,7 +2,6 @@
 角色设定页面
 """
 import sys
-sys.path.insert(0, 'e:/Avalon/Chaldea/Liying')
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 

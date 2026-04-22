@@ -3,7 +3,6 @@
 左侧导航栏 + 右侧内容区
 """
 import sys
-sys.path.insert(0, 'e:/Avalon/Chaldea/Liying')
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, 
@@ -134,6 +133,18 @@ class MainWindow(QMainWindow):
     def _is_mongodb_running(self):
         """检查 MongoDB 是否在运行（通过进程和端口）"""
         try:
+            expected_port = 27017
+            try:
+                from core.settings import AppSettings
+                s = AppSettings.load()
+                if s.mongodb_uri and "://" in s.mongodb_uri:
+                    tail = s.mongodb_uri.split("://", 1)[1]
+                    host_port = tail.split("/", 1)[0]
+                    if ":" in host_port:
+                        expected_port = int(host_port.rsplit(":", 1)[1])
+            except Exception:
+                expected_port = 27017
+
             # 检查进程
             result = subprocess.run(
                 ["tasklist", "/FI", "IMAGENAME eq mongod.exe"],
@@ -149,7 +160,7 @@ class MainWindow(QMainWindow):
                     text=True,
                     timeout=5
                 )
-                if ":27017" in port_check.stdout and "LISTENING" in port_check.stdout:
+                if f":{expected_port}" in port_check.stdout and "LISTENING" in port_check.stdout:
                     return True
         except Exception:
             pass
@@ -157,19 +168,23 @@ class MainWindow(QMainWindow):
 
     def _start_mongodb_process(self):
         """启动 MongoDB 进程"""
-        mongodb_path = Path("E:/MongoDB")
-        mongod_exe = mongodb_path / "bin" / "mongod.exe"
-        config_file = mongodb_path / "mongod.cfg"
+        mongod_exe_env = os.environ.get("MONGOD_EXE", "").strip()
+        mongod_cfg_env = os.environ.get("MONGOD_CFG", "").strip()
+        if not mongod_exe_env:
+            return
+        mongod_exe = Path(mongod_exe_env)
+        config_file = Path(mongod_cfg_env) if mongod_cfg_env else None
 
         if not mongod_exe.exists():
             return
 
         try:
             # 使用 Start-Process 在后台启动，隐藏窗口
-            subprocess.run([
-                "powershell", "-NoProfile", "-Command",
-                f"Start-Process -FilePath '{mongod_exe}' -ArgumentList '--config', '{config_file}' -WindowStyle Hidden"
-            ], timeout=10)
+            if config_file and config_file.exists():
+                arg = f\"Start-Process -FilePath '{mongod_exe}' -ArgumentList '--config', '{config_file}' -WindowStyle Hidden\"
+            else:
+                arg = f\"Start-Process -FilePath '{mongod_exe}' -WindowStyle Hidden\"
+            subprocess.run(["powershell", "-NoProfile", "-Command", arg], timeout=10)
             
             # 等待几秒让 MongoDB 启动
             for _ in range(5):

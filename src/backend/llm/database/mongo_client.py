@@ -26,29 +26,33 @@ class MongoDBClient:
     
     def __init__(
         self, 
-        host: str = "localhost", 
-        port: int = 27017, 
-        db_name: str = "liying_db"
+        host: str = "localhost",
+        port: int = 27017,
+        db_name: str = "liying_db",
+        uri: str | None = None,
     ):
         if self._client is None:
             self._host = host
             self._port = port
             self._db_name = db_name
+            self._uri = uri
             self._connect()
     
     def _connect(self):
         """建立数据库连接"""
         try:
             self._ensure_service()
-            self._client = MongoClient(
-                host=self._host,
-                port=self._port,
-                serverSelectionTimeoutMS=5000
-            )
+            if self._uri:
+                self._client = MongoClient(self._uri, serverSelectionTimeoutMS=5000)
+            else:
+                self._client = MongoClient(host=self._host, port=self._port, serverSelectionTimeoutMS=5000)
             # 测试连接
             self._client.admin.command('ping')
             self._db = self._client[self._db_name]
-            logger.info(f"MongoDB 连接成功: {self._host}:{self._port}/{self._db_name}")
+            if self._uri:
+                logger.info(f"MongoDB 连接成功: {self._uri}/{self._db_name}")
+            else:
+                logger.info(f"MongoDB 连接成功: {self._host}:{self._port}/{self._db_name}")
         except Exception as e:
             logger.error(f"MongoDB 连接失败: {e}")
             raise
@@ -130,12 +134,21 @@ _mongo_client: Optional[MongoDBClient] = None
 def get_mongo_client(
     host: str = "localhost",
     port: int = 27017,
-    db_name: str = "liying_db"
+    db_name: str = "liying_db",
+    uri: str | None = None,
 ) -> MongoDBClient:
     """获取 MongoDB 客户端实例"""
     global _mongo_client
     if _mongo_client is None:
-        _mongo_client = MongoDBClient(host, port, db_name)
+        if uri is None:
+            try:
+                from core.settings import AppSettings
+                s = AppSettings.load()
+                uri = s.mongodb_uri
+                db_name = s.mongodb_db
+            except Exception:
+                pass
+        _mongo_client = MongoDBClient(host, port, db_name, uri=uri)
     return _mongo_client
 
 

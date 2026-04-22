@@ -3,18 +3,112 @@ API 配置页面
 支持多配置方案管理
 """
 import sys
-sys.path.insert(0, 'e:/Avalon/Chaldea/Liying')
 
 import json
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QGroupBox, QPushButton, QComboBox,
     QFormLayout, QMessageBox, QScrollArea, QCheckBox,
-    QInputDialog, QFrame
+    QInputDialog, QFrame, QDialog
 )
 from PyQt6.QtCore import Qt
 import os
 from pathlib import Path
+
+
+class CustomInputDialog(QDialog):
+    """自定义输入对话框 - 避免黑色背景问题"""
+    
+    def __init__(self, parent=None, title="", label="", placeholder=""):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumWidth(400)
+        
+        # 设置样式 - 使用应用的绿色主题
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #f8fdf8;
+            }
+            QLabel {
+                color: #2d3a2d;
+                font-size: 14px;
+            }
+            QLineEdit {
+                background-color: #f1f8e9;
+                border: 1.5px solid #a5d6a7;
+                border-radius: 10px;
+                padding: 10px 14px;
+                color: #2d3a2d;
+                font-size: 13px;
+            }
+            QLineEdit:focus {
+                border-color: #43a047;
+                background-color: #ffffff;
+            }
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                            stop:0 #4caf50, stop:1 #43a047);
+                color: #ffffff;
+                border: none;
+                border-radius: 10px;
+                padding: 10px 24px;
+                font-weight: bold;
+                font-size: 13px;
+                min-width: 80px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                            stop:0 #66bb6a, stop:1 #4caf50);
+            }
+            QPushButton[class="secondary"] {
+                background: transparent;
+                border: 1.5px solid #a5d6a7;
+                color: #43a047;
+            }
+            QPushButton[class="secondary"]:hover {
+                border-color: #43a047;
+                background-color: #e8f5e9;
+                color: #2e7d32;
+            }
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setSpacing(15)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # 标签
+        if label:
+            label_widget = QLabel(label)
+            label_widget.setWordWrap(True)
+            layout.addWidget(label_widget)
+        
+        # 输入框
+        self.input_field = QLineEdit()
+        self.input_field.setPlaceholderText(placeholder)
+        self.input_field.setMinimumHeight(35)
+        layout.addWidget(self.input_field)
+        
+        # 按钮
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        self.ok_btn = QPushButton("确定")
+        self.ok_btn.clicked.connect(self.accept)
+        button_layout.addWidget(self.ok_btn)
+        
+        self.cancel_btn = QPushButton("取消")
+        self.cancel_btn.setProperty("class", "secondary")
+        self.cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(self.cancel_btn)
+        
+        layout.addLayout(button_layout)
+        
+        # 设置焦点
+        self.input_field.setFocus()
+    
+    def get_text(self):
+        """获取输入的文本"""
+        return self.input_field.text().strip()
 
 
 class ApiPage(QWidget):
@@ -58,11 +152,22 @@ class ApiPage(QWidget):
         llm_layout.setSpacing(14)
         llm_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
+        # 配置方案说明
+        profile_hint = QLabel("💡 配置方案：保存的完整配置（包含提供商、密钥等）")
+        profile_hint.setStyleSheet("color: #666; font-size: 11px; padding: 5px 0;")
+        llm_layout.addRow("", profile_hint)
+
         # 配置方案行
         profile_row = QHBoxLayout()
         self.profile_combo = QComboBox()
         self.profile_combo.setMinimumWidth(180)
+        self.profile_combo.currentTextChanged.connect(self.on_profile_selection_changed)
         profile_row.addWidget(self.profile_combo, 1)
+
+        self.new_profile_btn = QPushButton("+ 新建")
+        self.new_profile_btn.setToolTip("创建新的配置方案")
+        self.new_profile_btn.clicked.connect(self.create_new_profile)
+        profile_row.addWidget(self.new_profile_btn)
 
         self.switch_profile_btn = QPushButton("切换")
         self.switch_profile_btn.setToolTip("加载所选方案到表单并写入 .env")
@@ -75,12 +180,6 @@ class ApiPage(QWidget):
         self.save_current_btn.clicked.connect(self.save_to_current_profile)
         profile_row.addWidget(self.save_current_btn)
 
-        self.saveas_profile_btn = QPushButton("另存为")
-        self.saveas_profile_btn.setToolTip("另存为新方案")
-        self.saveas_profile_btn.setProperty("class", "secondary")
-        self.saveas_profile_btn.clicked.connect(self.save_as_new_profile)
-        profile_row.addWidget(self.saveas_profile_btn)
-
         self.delete_profile_btn = QPushButton("删除")
         self.delete_profile_btn.setToolTip("删除所选方案")
         self.delete_profile_btn.setProperty("class", "danger")
@@ -89,11 +188,41 @@ class ApiPage(QWidget):
 
         llm_layout.addRow("配置方案:", profile_row)
 
+        # 分隔线
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        separator.setStyleSheet("background-color: #e0e0e0; margin: 10px 0;")
+        llm_layout.addRow("", separator)
+
+        # 提供商配置说明
+        provider_hint = QLabel("⚙️ 以下配置当前方案的详细参数")
+        provider_hint.setStyleSheet("color: #666; font-size: 11px; padding: 5px 0;")
+        llm_layout.addRow("", provider_hint)
+
         # API 提供商
+        provider_layout = QHBoxLayout()
         self.provider_combo = QComboBox()
-        self.provider_combo.addItems(["DeepSeek", "OpenAI", "Claude", "自定义"])
+        self.provider_combo.setEditable(True)  # 允许用户输入自定义提供商名称
+        self.provider_combo.addItems([
+            "DeepSeek", 
+            "OpenAI", 
+            "Claude", 
+            "Xiaomi MiMo (按量)", 
+            "Xiaomi MiMo (Token Plan)",
+            "自定义"
+        ])
         self.provider_combo.currentTextChanged.connect(self.on_provider_changed)
-        llm_layout.addRow("API 提供商:", self.provider_combo)
+        provider_layout.addWidget(self.provider_combo, 1)
+        
+        # 添加帮助按钮
+        help_btn = QPushButton("?")
+        help_btn.setFixedWidth(30)
+        help_btn.setToolTip("查看提供商说明")
+        help_btn.clicked.connect(self.show_provider_help)
+        provider_layout.addWidget(help_btn)
+        
+        llm_layout.addRow("API 提供商:", provider_layout)
 
         # API Base URL
         self.api_base_edit = QLineEdit()
@@ -103,7 +232,7 @@ class ApiPage(QWidget):
         # API Key
         api_key_layout = QHBoxLayout()
         self.api_key_edit = QLineEdit()
-        self.api_key_edit.setPlaceholderText("sk-xxxxxxxxxxxxxxxx")
+        self.api_key_edit.setPlaceholderText("sk-xxxxx 或 tp-xxxxx (Token Plan)")
         self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.show_key_btn = QPushButton("👁")
         self.show_key_btn.setObjectName("showKeyBtn")
@@ -207,18 +336,42 @@ class ApiPage(QWidget):
         """提供商切换 → 更新 placeholder 和模型预设"""
         if self._loading:
             return
+        
+        # 预设配置字典
         defaults = {
-            "DeepSeek": ("https://api.deepseek.com", ["deepseek-chat", "deepseek-reasoner"]),
-            "OpenAI":   ("https://api.openai.com/v1", ["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"]),
-            "Claude":   ("https://api.anthropic.com", ["claude-3-opus", "claude-3-sonnet"]),
-            "自定义":    ("", [])
+            "DeepSeek": (
+                "https://api.deepseek.com", 
+                ["deepseek-chat", "deepseek-reasoner"]
+            ),
+            "OpenAI": (
+                "https://api.openai.com/v1", 
+                ["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"]
+            ),
+            "Claude": (
+                "https://api.anthropic.com", 
+                ["claude-3-opus", "claude-3-sonnet"]
+            ),
+            "Xiaomi MiMo (按量)": (
+                "https://api.xiaomimimo.com/v1",
+                ["mimo-v2-pro", "mimo-v2-omni", "mimo-v2-flash"]
+            ),
+            "Xiaomi MiMo (Token Plan)": (
+                "https://token-plan-cn.xiaomimimo.com/v1",
+                ["mimo-v2-pro", "mimo-v2-omni", "mimo-v2-flash"]
+            ),
+            "自定义": ("", [])
         }
+        
+        # 如果是预设提供商，应用默认配置
         if provider in defaults:
             base_url, models = defaults[provider]
             self.api_base_edit.setPlaceholderText(base_url)
             if models:
                 self.model_combo.clear()
                 self.model_combo.addItems(models)
+        else:
+            # 自定义提供商，清空 placeholder
+            self.api_base_edit.setPlaceholderText("https://your-api-endpoint.com/v1")
 
     def toggle_key_visibility(self):
         if self.api_key_edit.echoMode() == QLineEdit.EchoMode.Password:
@@ -227,6 +380,43 @@ class ApiPage(QWidget):
         else:
             self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
             self.show_key_btn.setText("👁")
+    
+    def show_provider_help(self):
+        """显示提供商帮助信息"""
+        help_text = """
+<h3>API 提供商说明</h3>
+
+<p><b>Xiaomi MiMo (按量)</b></p>
+<ul>
+<li>按实际使用量计费</li>
+<li>API 端点: https://api.xiaomimimo.com/v1</li>
+<li>API Key 格式: sk-xxxxx</li>
+<li>定价: ≤256K 上下文 $1/1M input, $3/1M output</li>
+</ul>
+
+<p><b>Xiaomi MiMo (Token Plan)</b></p>
+<ul>
+<li>固定订阅费用，按套餐限额调用</li>
+<li>API 端点: https://token-plan-cn.xiaomimimo.com/v1</li>
+<li>API Key 格式: tp-xxxxx</li>
+<li>需要先在平台订阅 Token Plan</li>
+</ul>
+
+<p><b>自定义提供商</b></p>
+<ul>
+<li>可以输入任意提供商名称</li>
+<li>手动填写 API Base URL 和模型名称</li>
+<li>适用于兼容 OpenAI 格式的第三方 API</li>
+</ul>
+
+<p>参考文档: <a href="https://platform.xiaomimimo.com">https://platform.xiaomimimo.com</a></p>
+        """
+        msg = QMessageBox(self)
+        msg.setWindowTitle("提供商说明")
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setText(help_text)
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.exec()
 
     # ================================================================
     #  Profile ↔ 表单 互转
@@ -244,14 +434,19 @@ class ApiPage(QWidget):
 
     def _apply_profile_to_form(self, profile: dict):
         self._loading = True
-        # 提供商
+        
+        # 提供商 - 改进逻辑：保留原始提供商名称
         provider = profile.get("provider", "")
         if provider:
+            # 先尝试在下拉列表中查找
             idx = self.provider_combo.findText(provider)
             if idx >= 0:
+                # 找到了，直接选中
                 self.provider_combo.setCurrentIndex(idx)
             else:
-                self.provider_combo.setCurrentText("自定义")
+                # 没找到，说明是自定义提供商，直接设置文本（因为 combo 可编辑）
+                self.provider_combo.setCurrentText(provider)
+        
         # 其它字段
         self.api_base_edit.setText(profile.get("api_base", ""))
         self.api_key_edit.setText(profile.get("api_key", ""))
@@ -398,6 +593,105 @@ class ApiPage(QWidget):
     # ================================================================
     #  方案操作
     # ================================================================
+    def on_profile_selection_changed(self, profile_name: str):
+        """配置方案选择变化时的处理"""
+        # 防止加载期间触发
+        if self._loading:
+            return
+        
+        # 如果选择的是现有方案，不做任何操作（用户需要点击"切换"按钮）
+        # 这样可以避免误操作
+        pass
+    
+    def create_new_profile(self):
+        """创建新配置方案 - 先命名，后配置"""
+        # 使用自定义对话框输入方案名称
+        dialog = CustomInputDialog(
+            parent=self,
+            title="新建配置方案",
+            label="请输入新方案名称：\n\n提示：可以根据用途命名，如 'Xiaomi MiMo 工作用'、'DeepSeek 测试' 等",
+            placeholder="例如：Xiaomi MiMo 工作用"
+        )
+        
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        
+        name = dialog.get_text()
+        if not name:
+            return
+        
+        profiles = self._profiles.get("profiles", {})
+        
+        # 检查是否已存在
+        if name in profiles:
+            QMessageBox.warning(
+                self, "名称冲突",
+                f'方案 "{name}" 已存在，请使用其他名称。')
+            return
+        
+        # 清空表单，准备配置新方案
+        self._loading = True
+        self.provider_combo.setCurrentText("自定义")
+        self.api_base_edit.clear()
+        self.api_key_edit.clear()
+        self.model_combo.clear()
+        self.temperature_edit.clear()
+        self.max_tokens_edit.clear()
+        self.timeout_edit.clear()
+        self._loading = False
+        
+        # 创建空方案
+        profiles[name] = {
+            "provider": "自定义",
+            "api_base": "",
+            "api_key": "",
+            "model": "",
+            "temperature": "",
+            "max_tokens": "",
+            "timeout": ""
+        }
+        self._profiles["profiles"] = profiles
+        self._profiles["active"] = name
+        self.save_profiles()
+        self._refresh_profile_combo()
+        
+        # 显示引导提示
+        QMessageBox.information(
+            self, "方案已创建",
+            f'✅ 方案 "{name}" 已创建！\n\n'
+            f'📝 接下来请配置：\n'
+            f'1️⃣ 选择 API 提供商（如 Xiaomi MiMo）\n'
+            f'2️⃣ 填写 API Key 和模型\n'
+            f'3️⃣ 点击"测试连接"验证\n'
+            f'4️⃣ 点击"保存"保存配置\n'
+            f'5️⃣ 点击"切换"激活配置')
+        
+        # 创建空方案
+        profiles[name] = {
+            "provider": "自定义",
+            "api_base": "",
+            "api_key": "",
+            "model": "",
+            "temperature": "",
+            "max_tokens": "",
+            "timeout": ""
+        }
+        self._profiles["profiles"] = profiles
+        self._profiles["active"] = name
+        self.save_profiles()
+        self._refresh_profile_combo()
+        
+        # 显示引导提示
+        QMessageBox.information(
+            self, "方案已创建",
+            f'✅ 方案 "{name}" 已创建！\n\n'
+            f'📝 接下来请配置：\n'
+            f'1️⃣ 选择 API 提供商（如 Xiaomi MiMo）\n'
+            f'2️⃣ 填写 API Key 和模型\n'
+            f'3️⃣ 点击"测试连接"验证\n'
+            f'4️⃣ 点击"保存"保存配置\n'
+            f'5️⃣ 点击"切换"激活配置')
+    
     def switch_to_selected_profile(self):
         """切换：加载所选方案到表单 + 写入 .env"""
         name = self.profile_combo.currentText()
@@ -419,8 +713,11 @@ class ApiPage(QWidget):
         """保存：将表单覆盖写入当前选中的方案"""
         name = self.profile_combo.currentText()
         if not name:
-            self.save_as_new_profile()
+            QMessageBox.warning(
+                self, "提示",
+                "请先选择一个配置方案，或点击 '+ 新建' 创建新方案。")
             return
+        
         profile_data = self._form_to_profile_dict()
         self._profiles.setdefault("profiles", {})[name] = profile_data
         self._profiles["active"] = name
@@ -432,12 +729,22 @@ class ApiPage(QWidget):
             f'方案 "{name}" 已更新，并同步写入 .env 文件。')
 
     def save_as_new_profile(self):
-        """另存为：将表单保存到新名称"""
-        name, ok = QInputDialog.getText(
-            self, "另存为新方案", "请输入新方案名称：", text="")
-        if not ok or not name.strip():
+        """另存为：将表单保存到新名称（已被 create_new_profile 替代，保留以防兼容性问题）"""
+        # 使用自定义对话框
+        dialog = CustomInputDialog(
+            parent=self,
+            title="另存为新方案",
+            label="请输入新方案名称：",
+            placeholder="例如：Xiaomi MiMo 备用"
+        )
+        
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        name = name.strip()
+        
+        name = dialog.get_text()
+        if not name:
+            return
+        
         profiles = self._profiles.setdefault("profiles", {})
         if name in profiles:
             reply = QMessageBox.question(
@@ -463,14 +770,22 @@ class ApiPage(QWidget):
         if name not in profiles:
             return
         if len(profiles) <= 1:
-            QMessageBox.warning(self, "无法删除", "至少保留一个配置方案。")
+            QMessageBox.warning(
+                self, "无法删除", 
+                "至少保留一个配置方案。\n\n如果要删除当前方案，请先创建其他方案。")
             return
+        
+        # 使用更友好的确认对话框
         reply = QMessageBox.question(
-            self, "删除确认",
-            f'确定删除方案 "{name}" 吗？',
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            self, "确认删除",
+            f'确定要删除配置方案 "{name}" 吗？\n\n'
+            f'此操作不可恢复。',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)  # 默认选择 No，更安全
+        
         if reply != QMessageBox.StandardButton.Yes:
             return
+        
         del profiles[name]
         if self._profiles.get("active") == name:
             self._profiles["active"] = next(iter(profiles))
@@ -479,7 +794,9 @@ class ApiPage(QWidget):
         new_active = self._profiles.get("active", "")
         if new_active and new_active in profiles:
             self._apply_profile_to_form(profiles[new_active])
-        QMessageBox.information(self, "已删除", f'方案 "{name}" 已删除。')
+        QMessageBox.information(
+            self, "已删除", 
+            f'方案 "{name}" 已删除。\n\n当前激活方案：{new_active}')
 
     # ================================================================
     #  测试连接 / 重置
