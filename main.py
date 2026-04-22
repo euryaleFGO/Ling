@@ -25,6 +25,10 @@ project_root = Path(__file__).parent
 src_path = project_root / "src"
 sys.path.insert(0, str(src_path))
 
+# 在所有子模块读取 os.environ 之前加载 .env
+from dotenv import load_dotenv
+load_dotenv(project_root / ".env")
+
 
 def _parse_asr_device(argv) -> str:
     """

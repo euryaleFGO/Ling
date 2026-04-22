@@ -181,9 +181,9 @@ class MainWindow(QMainWindow):
         try:
             # 使用 Start-Process 在后台启动，隐藏窗口
             if config_file and config_file.exists():
-                arg = f\"Start-Process -FilePath '{mongod_exe}' -ArgumentList '--config', '{config_file}' -WindowStyle Hidden\"
+                arg = f"Start-Process -FilePath '{mongod_exe}' -ArgumentList '--config', '{config_file}' -WindowStyle Hidden"
             else:
-                arg = f\"Start-Process -FilePath '{mongod_exe}' -WindowStyle Hidden\"
+                arg = f"Start-Process -FilePath '{mongod_exe}' -WindowStyle Hidden"
             subprocess.run(["powershell", "-NoProfile", "-Command", arg], timeout=10)
             
             # 等待几秒让 MongoDB 启动

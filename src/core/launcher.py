@@ -174,9 +174,9 @@ class Launcher:
         try:
             # 使用 Start-Process 在后台启动，隐藏窗口
             if config_file and config_file.exists():
-                arg = f\"Start-Process -FilePath '{mongod_exe}' -ArgumentList '--config', '{config_file}' -WindowStyle Hidden\"
+                arg = f"Start-Process -FilePath '{mongod_exe}' -ArgumentList '--config', '{config_file}' -WindowStyle Hidden"
             else:
-                arg = f\"Start-Process -FilePath '{mongod_exe}' -WindowStyle Hidden\"
+                arg = f"Start-Process -FilePath '{mongod_exe}' -WindowStyle Hidden"
             subprocess.run(["powershell", "-NoProfile", "-Command", arg], timeout=10)
             
             # 等待几秒让 MongoDB 启动
@@ -362,12 +362,26 @@ class Launcher:
             return
 
         cmd = None
-        # Try Maven first, then JAR
-        if (live2d_path / "pom.xml").exists():
+        jar_path = live2d_path / "target" / "live2d-pet-1.0.0.jar"
+        is_macos = sys.platform == "darwin"
+
+        # macOS: GLFW 需要 -XstartOnFirstThread，Maven exec:java 在子线程跑 main 会违反主线程要求，
+        # 所以 Mac 下强制走 JAR 启动（需要先 mvn package 过），JAR 命令带 Mac 专用 JVM 参数。
+        if is_macos and jar_path.exists():
+            cmd = [
+                "java",
+                "-XstartOnFirstThread",
+                f"-Djna.library.path={live2d_path}",
+                "-jar",
+                str(jar_path),
+            ]
+
+        # Try Maven first, then JAR（非 Mac 或 Mac 下 jar 还没打包的兜底）
+        if not cmd and (live2d_path / "pom.xml").exists():
             # Maven
             # Use mvn.cmd on Windows to avoid 'FileNotFoundError'
             mvn_cmd = "mvn.cmd" if sys.platform == "win32" else "mvn"
-            
+
             # Check if mvn is in path
             if shutil.which(mvn_cmd) is None:
                 # Fallback to just 'mvn' if 'mvn.cmd' not found (unlikely on valid Windows install but possible)
@@ -376,15 +390,13 @@ class Launcher:
                 else:
                     log.debug("Maven (mvn) not found in PATH.")
                     mvn_cmd = None
-            
+
             if mvn_cmd:
                 # 先编译，然后运行（确保代码更改后会自动重新编译）
                 cmd = [mvn_cmd, "-q", "-DskipTests", "compile", "exec:java"]
-        
+
         # Fallback to JAR if Maven not available or not found
         if not cmd:
-            # Check for JAR
-            jar_path = live2d_path / "target" / "live2d-pet-1.0.0.jar"
             if jar_path.exists():
                 cmd = ["java", "-jar", str(jar_path)]
             else:

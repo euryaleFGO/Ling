@@ -95,7 +95,12 @@ audio_output/
 # 编译文件
 frontend/Live2DPet/target/
 src/frontend/live2d/target/
+src/frontend/live2d/dependency-reduced-pom.xml
 *.class
+
+# Live2D Cubism Core 原生库（Live2D 分发许可限制，不入仓库）
+src/frontend/live2d/libLive2DCubismCore.dylib
+src/frontend/live2d/libLive2DCubismCore.so
 
 # 个人数据（可选，如果不想上传）
 data/screenshots/

@@ -170,8 +170,17 @@ public class Main {
         }
         
         glfwDefaultWindowHints();
-        glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
-        glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+        boolean isMac = System.getProperty("os.name", "").toLowerCase().contains("mac");
+        if (isMac) {
+            // macOS 下 GLFW 透明 framebuffer + 无边框会导致窗口整个不可见，先用正常窗口
+            glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_FALSE);
+            glfwWindowHint(GLFW_DECORATED, GLFW_TRUE);
+            // macOS Core Profile 3.3+ 必须 forward-compat，否则 OpenGL context 渲染不出画面
+            glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+        } else {
+            glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
+            glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+        }
         glfwWindowHint(GLFW_FLOATING, GLFW_TRUE);
         glfwWindowHint(GLFW_ALPHA_BITS, 8);
         glfwWindowHint(GLFW_DEPTH_BITS, 0);
@@ -179,7 +188,7 @@ public class Main {
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-        glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE); // 先隐藏，激活 context 后再 show
         glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
         
         window = glfwCreateWindow(width, height, "Live2D Pet", NULL, NULL);
@@ -189,13 +198,17 @@ public class Main {
         
         System.out.println("[OK] GLFW window created");
         
-        try {
-            long hwnd = GLFWNativeWin32.glfwGetWin32Window(window);
-            if (hwnd != 0) {
-                WindowsTransparency.enableTransparency(hwnd);
+        if (System.getProperty("os.name", "").toLowerCase().contains("windows")) {
+            try {
+                long hwnd = GLFWNativeWin32.glfwGetWin32Window(window);
+                if (hwnd != 0) {
+                    WindowsTransparency.enableTransparency(hwnd);
+                }
+            } catch (Throwable e) {
+                System.err.println("[WARN] Transparency config failed: " + e.getMessage());
             }
-        } catch (Exception e) {
-            System.err.println("[WARN] Transparency config failed: " + e.getMessage());
+        } else {
+            System.out.println("[INFO] Non-Windows platform, skipping Win32 transparency");
         }
         
         GLFWVidMode vidmode = glfwGetVideoMode(glfwGetPrimaryMonitor());
@@ -267,6 +280,20 @@ public class Main {
         glfwMakeContextCurrent(window);
         glfwSwapInterval(1);
         GL.createCapabilities();
+        glfwShowWindow(window); // 激活 context 后再显示窗口（Mac 必要）
+
+        // macOS Sonoma+ 黑屏 workaround：触发一次 resize 让 NSView 开始渲染
+        if (System.getProperty("os.name", "").toLowerCase().contains("mac")) {
+            glfwSetWindowSize(window, 1599, 1199);
+            glfwSetWindowSize(window, 1600, 1200);
+        }
+
+        // Mac Retina 下 framebuffer 尺寸 != 窗口尺寸，用 framebuffer 的做 viewport
+        int[] fbW = new int[1], fbH = new int[1];
+        glfwGetFramebufferSize(window, fbW, fbH);
+        this.width = fbW[0];
+        this.height = fbH[0];
+        System.out.println("[FB] framebuffer size: " + fbW[0] + "x" + fbH[0]);
         
         String renderer = glGetString(GL_RENDERER);
         int[] alphaBits = new int[1];
