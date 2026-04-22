@@ -51,6 +51,15 @@ Trash/
 .modelscope_cache/
 ~$$*.vsdx
 
+# Kiro 规格文件（本地规划用，不上传）
+.kiro/
+
+# docs（你要求不上传）
+docs/
+
+# 工具脚本（默认不作为主项目发布内容；如需提交再删掉本条）
+tools/
+
 # 模型文件（太大，不应上传）
 models/
 src/models/
