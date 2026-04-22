@@ -112,6 +112,13 @@ mess/
 # 大体积压缩包（部署包自行下载）
 deploy/*.zip
 
+# 部署打包产物（CosyVoice + Rhubarb-Lip-Sync 等第三方发行包，按需下载/打包，不入仓）
+deploy/tts_server/
+deploy/*_pack/
+Rhubarb-Lip-Sync-*/
+# Sphinx 语音识别离线模型（随 Rhubarb 分发）
+**/res/sphinx/
+
 # 临时文件
 query
 0.5.0
