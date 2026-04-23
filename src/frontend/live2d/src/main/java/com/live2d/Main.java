@@ -282,7 +282,9 @@ public class Main {
         
         glViewport(0, 0, width, height);
         glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        // 使用分离混合函数：RGB 通道使用覆盖模式，Alpha 通道使用标准混合
+        // 这样可以确保角色的颜色不受背景影响，同时保持透明效果
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         glDisable(GL_DEPTH_TEST);
         
