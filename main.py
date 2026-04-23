@@ -25,6 +25,10 @@ project_root = Path(__file__).parent
 src_path = project_root / "src"
 sys.path.insert(0, str(src_path))
 
+# 加载 .env 文件（必须在最开始加载）
+from dotenv import load_dotenv
+load_dotenv()
+
 
 def _parse_asr_device(argv) -> str:
     """
