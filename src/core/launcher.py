@@ -68,6 +68,52 @@ class Launcher:
         # 启动对话系统
         if self.enable_conversation:
             self.start_conversation_system()
+
+        # Self-healing system initialization
+        self._heal_event_bus = None
+        self._heal_backup = None
+        self._heal_rate_limiter = None
+        self._heal_emergency_stop = None
+        self._heal_error_handler = None
+        self._heal_monitor = None
+        try:
+            from backend.llm.self_heal import (
+                EventBus, HealthMonitor, ErrorHandler, BackupManager,
+                RateLimiter, EmergencyStop, LogWatchCheck, ServiceHealthCheck,
+                ConfigValidateCheck, PerformanceCheck, RetryStrategy,
+                ServiceRestartStrategy, ConfigRollbackStrategy, NotifyUserStrategy,
+            )
+
+            # Create components
+            self._heal_event_bus = EventBus()
+            self._heal_backup = BackupManager(backup_dir="data/backups/snapshots")
+            self._heal_rate_limiter = RateLimiter(max_per_window=5, window_seconds=300)
+            self._heal_emergency_stop = EmergencyStop()
+
+            # Create error handler with strategy chain
+            self._heal_error_handler = ErrorHandler(
+                event_bus=self._heal_event_bus,
+                backup_manager=self._heal_backup,
+                rate_limiter=self._heal_rate_limiter,
+                emergency_stop=self._heal_emergency_stop,
+            )
+            self._heal_error_handler.add_strategy(RetryStrategy(max_retries=3))
+            self._heal_error_handler.add_strategy(ServiceRestartStrategy())
+            self._heal_error_handler.add_strategy(ConfigRollbackStrategy(self._heal_backup))
+            self._heal_error_handler.add_strategy(NotifyUserStrategy())
+
+            # Create health monitor with checks
+            self._heal_monitor = HealthMonitor(self._heal_event_bus)
+            self._heal_monitor.register_check(LogWatchCheck(log_dir="logs"))
+            self._heal_monitor.register_check(ServiceHealthCheck())
+            self._heal_monitor.register_check(ConfigValidateCheck())
+            self._heal_monitor.register_check(PerformanceCheck())
+
+            # Start background monitoring
+            self._heal_monitor.start()
+            log.debug("自修复系统已启动")
+        except Exception as e:
+            log.error(f"自修复系统初始化失败: {e}")
         
     def ensure_mongodb_service(self):
         """Check if MongoDB is running and start it if necessary."""
@@ -174,9 +220,9 @@ class Launcher:
         try:
             # 使用 Start-Process 在后台启动，隐藏窗口
             if config_file and config_file.exists():
-                arg = f\"Start-Process -FilePath '{mongod_exe}' -ArgumentList '--config', '{config_file}' -WindowStyle Hidden\"
+                arg = f"Start-Process -FilePath '{mongod_exe}' -ArgumentList '--config', '{config_file}' -WindowStyle Hidden"
             else:
-                arg = f\"Start-Process -FilePath '{mongod_exe}' -WindowStyle Hidden\"
+                arg = f"Start-Process -FilePath '{mongod_exe}' -WindowStyle Hidden"
             subprocess.run(["powershell", "-NoProfile", "-Command", arg], timeout=10)
             
             # 等待几秒让 MongoDB 启动
@@ -229,14 +275,15 @@ class Launcher:
         self.tray_icon.show()
     
     def start_conversation_system(self):
-        """启动对话系统（ASR + Agent + TTS）"""
+        """启动对话系统（ASR + Agent + TTS）- 使用异步版本"""
         log.debug("\n" + "=" * 50)
-        log.debug("正在启动对话系统...")
+        log.debug("正在启动异步对话系统...")
         log.debug("=" * 50)
         
         def run_conversation():
             try:
-                from core.conversation_manager import ConversationManager, ConversationConfig
+                import asyncio
+                from core.conversation_manager_async import AsyncConversationManager, ConversationConfig
                 
                 config = ConversationConfig(
                     user_id=os.environ.get("LIYING_USER_ID", "default_user"),
@@ -246,9 +293,14 @@ class Launcher:
                     tts_remote_url=os.environ.get("LIYING_TTS_REMOTE_URL") or None,
                     tts_spk_id=os.environ.get("LIYING_TTS_SPK_ID", "玲"),
                     use_text_input=self.text_only,  # 文字输入模式
+                    # 异步优化配置
+                    enable_barge_in=True,  # 启用打断功能
+                    tts_enable_cache=True,  # 启用 TTS 缓存
+                    tts_cache_size=100,  # 缓存大小
+                    asr_stream_profile="balanced",  # ASR 流式配置（balanced/low_latency/accuracy）
                 )
                 
-                self._conversation_manager = ConversationManager(config)
+                self._conversation_manager = AsyncConversationManager(config)
                 
                 # 情绪 → Live2D 动作映射（Agent 根据 LLM 情绪自主触发）
                 EMOTION_TO_MOTION = {
@@ -310,8 +362,16 @@ class Launcher:
                     on_exit_requested=on_exit_requested,
                 )
                 
-                # 启动对话（阻塞）
-                self._conversation_manager.start(blocking=True)
+                # 初始化对话管理器
+                self._conversation_manager.initialize()
+                
+                # 创建新的事件循环并运行异步对话系统
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(self._conversation_manager.run_async())
+                finally:
+                    loop.close()
                 
             except Exception as e:
                 log.error(f"对话系统启动失败: {e}")
@@ -331,21 +391,31 @@ class Launcher:
         """暂停/恢复对话"""
         if self._conversation_manager:
             if self.action_pause.isChecked():
-                # 暂停
-                if hasattr(self._conversation_manager, '_audio_input'):
-                    self._conversation_manager._audio_input.stop_listening()
+                # 暂停 - 异步版本使用 cancel_current_turn
+                if hasattr(self._conversation_manager, 'cancel_current_turn'):
+                    import asyncio
+                    # 在事件循环中取消当前 turn
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            self._conversation_manager.cancel_current_turn(),
+                            self._conversation_manager._loop if hasattr(self._conversation_manager, '_loop') else asyncio.get_event_loop()
+                        )
+                    except Exception as e:
+                        log.debug(f"取消对话时出错: {e}")
                 log.debug("对话已暂停")
             else:
-                # 恢复
-                if hasattr(self._conversation_manager, '_audio_input'):
-                    self._conversation_manager._audio_input.start_listening()
+                # 恢复 - 异步版本会自动恢复
                 log.debug("对话已恢复")
     
     def stop_conversation_system(self):
         """停止对话系统"""
         if self._conversation_manager:
-            log.debug("正在停止对话系统...")
-            self._conversation_manager.stop()
+            log.debug("正在停止异步对话系统...")
+            # 异步版本使用 stop_sync 方法（同步版本）
+            if hasattr(self._conversation_manager, 'stop_sync'):
+                self._conversation_manager.stop_sync()
+            elif hasattr(self._conversation_manager, 'stop'):
+                self._conversation_manager.stop()
             self._conversation_manager = None
         
     def show_settings(self):
@@ -545,6 +615,14 @@ class Launcher:
     def quit_app(self):
         """退出应用，关闭所有相关进程"""
         log.info("正在关闭...")
+
+        # Stop self-healing monitor
+        if hasattr(self, '_heal_monitor') and self._heal_monitor is not None:
+            try:
+                self._heal_monitor.stop()
+                log.debug("自修复监控已停止")
+            except Exception as e:
+                log.debug(f"停止自修复监控时出错: {e}")
 
         # 先关闭消息服务
         self._stop_message_server()
