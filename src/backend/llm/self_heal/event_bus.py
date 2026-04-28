@@ -1,7 +1,10 @@
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -34,15 +37,26 @@ class EventBus:
                 self._handlers[event_type] = [
                     h for h in self._handlers[event_type] if h != handler
                 ]
+                if not self._handlers[event_type]:
+                    del self._handlers[event_type]
 
     def emit(self, event: Event) -> None:
         """Dispatch event to all matching handlers (thread-safe)."""
         with self._lock:
             handlers = list(self._handlers.get(event.type, []))
-            handlers += list(self._handlers.get("*", []))
+            wildcard = list(self._handlers.get("*", []))
+            # Deduplicate
+            seen = set()
+            unique = []
+            for h in handlers + wildcard:
+                hid = id(h)
+                if hid not in seen:
+                    seen.add(hid)
+                    unique.append(h)
+            handlers = unique
 
         for handler in handlers:
             try:
                 handler(event)
-            except Exception:
-                pass  # Handler errors must not crash the bus
+            except Exception as exc:
+                logger.warning("Handler %s failed for event %s: %s", handler, event.type, exc)
