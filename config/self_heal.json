@@ -1,0 +1,29 @@
+{
+  "enabled": true,
+  "allowed_paths": [],
+  "excluded_paths": [
+    ".git",
+    "node_modules",
+    "__pycache__",
+    "data/backups",
+    "models"
+  ],
+  "backup_dir": "data/backups/snapshots",
+  "max_backups": 50,
+  "auto_test": true,
+  "auto_rollback_on_failure": true,
+  "rate_limit": {
+    "max_per_window": 5,
+    "window_seconds": 300
+  },
+  "health_checks": {
+    "log_watch_interval": 2,
+    "service_health_interval": 30,
+    "config_validate_interval": 60,
+    "performance_interval": 10
+  },
+  "services": {
+    "tts": "http://127.0.0.1:8000/health",
+    "asr": "http://127.0.0.1:8001/health"
+  }
+}
