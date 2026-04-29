@@ -20,7 +20,7 @@
     # 📖 图中文字: STARBUCKS, WiFi: guest
 """
 
-from .vision_engine import VisionEngine, VisionConfig
+from .vision_engine import VisionEngine, VisionConfig, VisionResult, VisionModule
 
-__all__ = ["VisionEngine", "VisionConfig"]
+__all__ = ["VisionEngine", "VisionConfig", "VisionResult", "VisionModule"]
 __version__ = "1.0.0"

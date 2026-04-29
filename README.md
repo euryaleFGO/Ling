@@ -309,24 +309,76 @@ Liying/
 
 ## 🚀 快速开始
 
-### 环境要求
+### 方式 1: 一键部署（推荐）⭐
+
+使用部署脚本自动安装所有依赖和配置环境。
+
+#### Linux/macOS
+
+```bash
+# 1. 克隆项目
+git clone <repository-url>
+cd Liying
+
+# 2. 一键安装
+bash deploy.sh install
+
+# 3. 配置环境变量（编辑 .env 文件）
+nano .env
+
+# 4. 启动系统
+bash deploy.sh start
+
+# 5. 查看状态
+bash deploy.sh status
+```
+
+#### Windows
+
+```powershell
+# 1. 克隆项目
+git clone <repository-url>
+cd Liying
+
+# 2. 一键安装
+.\deploy.ps1 install
+
+# 3. 配置环境变量（编辑 .env 文件）
+notepad .env
+
+# 4. 启动系统
+.\deploy.ps1 start
+
+# 5. 查看状态
+.\deploy.ps1 status
+```
+
+**详细部署文档**: 查看 [DEPLOYMENT.md](DEPLOYMENT.md)
+
+---
+
+### 方式 2: 手动安装
+
+如果你想手动控制每个步骤，可以按照以下步骤操作。
+
+#### 环境要求
 
 - **操作系统**: Windows 10/11 (推荐), Linux, macOS
-- **Python**: 3.12+
-- **Java**: 17+
+- **Python**: 3.8+ (推荐 3.12)
+- **Java**: 17+ (用于 Live2D)
 - **CUDA**: 12.1+ (可选，用于 GPU 加速)
 - **显卡**: NVIDIA GPU，4GB+ 显存 (推荐)
 - **内存**: 8GB+ RAM
 - **磁盘**: 10GB+ 可用空间
 
-### 1. 克隆项目
+#### 1. 克隆项目
 
 ```bash
 git clone <repository-url>
 cd Liying
 ```
 
-### 2. 创建 Python 环境
+#### 2. 创建 Python 环境
 
 ```bash
 # 使用 conda (推荐)
@@ -341,40 +393,21 @@ venv\Scripts\activate
 source venv/bin/activate
 ```
 
-### 3. 安装依赖
-
-#### 安装 PyTorch (GPU 版本)
+#### 3. 安装依赖
 
 ```bash
-# CUDA 12.1 版本（推荐，兼容性更好）
+# 安装 PyTorch (CUDA 12.1)
 pip install torch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1 --index-url https://download.pytorch.org/whl/cu121
 
-# 或 CUDA 12.4 版本（最新）
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+# 安装其他依赖
+pip install -r requirements.txt
 ```
 
-#### 安装其他依赖
+#### 4. 安装 MongoDB
 
-```bash
-# TTS 依赖
-pip install -r install_tts_requirements.txt
+**Windows**: 下载并安装 [MongoDB Community Server](https://www.mongodb.com/try/download/community)
 
-# 或使用安装脚本（Windows）
-install_tts_dependencies.bat
-```
-
-#### 安装其他 Python 依赖
-
-```bash
-pip install pymongo chromadb openai requests PyQt6 numpy librosa soundfile
-```
-
-### 4. 安装 MongoDB
-
-#### Windows
-下载并安装 MongoDB Community Server: https://www.mongodb.com/try/download/community
-
-#### Linux
+**Linux**:
 ```bash
 # Ubuntu/Debian
 sudo apt-get install mongodb
@@ -383,63 +416,45 @@ sudo apt-get install mongodb
 docker run -d -p 27017:27017 --name mongodb mongo:latest
 ```
 
-#### macOS
+**macOS**:
 ```bash
 brew install mongodb-community
 brew services start mongodb-community
 ```
 
-### 5. 配置 API 密钥
+#### 5. 配置环境变量
 
-创建 `.env` 文件或设置环境变量：
-
-```bash
-# src/backend/llm/api_infer/config.py 或环境变量
-export DEEPSEEK_API_KEY="your-api-key-here"
-export BASE_URL="https://api.deepseek.com/v1"
-export MODEL="deepseek-chat"
-```
-
-### 6. 下载模型
-
-#### TTS 模型 (CosyVoice2-0.5B)
-
-```python
-# 使用 ModelScope
-from modelscope import snapshot_download
-snapshot_download('iic/CosyVoice2-0.5B', local_dir='models/TTS/CosyVoice2-0.5B')
-```
-
-#### 参考音频
-
-将参考音频文件放置到以下位置之一：
-- `backtend/TTS/Local/MagicMirror/backend/audio/zjj.wav`
-- `Model/zjj.wav`
-- `audio/zjj.wav`
-
-### 7. 启动系统
-
-#### 方式 1: 使用启动器（推荐）
+复制 `.env.example` 为 `.env` 并编辑：
 
 ```bash
-# 启动 MongoDB + Live2D + 消息服务器
-python launcher.py
-
-# 调试模式
-python launcher.py --debug
+cp .env.example .env
+# 编辑 .env 文件，填写必要的配置
 ```
 
-#### 方式 2: 手动启动
+必需配置：
+```bash
+OPENAI_API_BASE=https://api.openai.com/v1
+OPENAI_API_KEY=your_api_key_here
+OPENAI_MODEL=gpt-4
+```
+
+#### 6. 初始化数据库
 
 ```bash
-# 终端 1: 启动消息服务器
-python message_server.py
+python scripts/setup_database.py --seed
+```
 
-# 终端 2: 启动 Live2D (通过 launcher)
-python launcher.py
+#### 7. 启动系统
 
-# 终端 3: 发送消息
-python scripts/send_message.py "你好"
+```bash
+# 启动主程序（包括 GUI、Live2D、对话系统）
+python main.py
+
+# 或启动文字对话模式
+python main.py --text
+
+# 或启动调试模式
+python main.py --debug
 ```
 
 ### 启动云端 CosyVoice TTS 服务（可选）
@@ -775,5 +790,5 @@ python scripts/send_message.py "测试消息"
 
 ---
 
-**Made with ❤️ by Liying Team**
+**Made with ❤️ by Ling Team**
 

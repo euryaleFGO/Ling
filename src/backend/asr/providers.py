@@ -198,3 +198,50 @@ class WhisperRemoteProvider(ASRProvider):
             return (r.json().get("text") or "").strip()
         finally:
             Path(tmp.name).unlink(missing_ok=True)
+
+
+class FunASRRemoteProvider(ASRProvider):
+    """
+    远程 FunASR 服务（自建服务器）
+    
+    - 本地麦克风采集，发送到远程服务器识别
+    - 不支持流式，录音结束整段发送
+    - 比 Whisper API 更快，适合自建服务器
+    """
+    
+    def __init__(
+        self,
+        base_url: str = "http://localhost:5002",
+        language: str = "zh",
+    ):
+        from backend.asr.remote_client import RemoteASRClient, RemoteASRConfig
+        config = RemoteASRConfig(base_url=base_url, language=language)
+        self._client = RemoteASRClient(config)
+        self._buffer: list = []
+    
+    @property
+    def supports_streaming(self) -> bool:
+        return False
+    
+    def get_chunk_stride(self) -> int:
+        return 5760  # 与 FunASR 兼容
+    
+    def start_stream(self) -> None:
+        self._buffer = []
+    
+    def feed_audio(self, chunk: np.ndarray) -> str:
+        """缓冲音频，不支持实时流式"""
+        self._buffer.append(chunk.copy())
+        return ""
+    
+    def end_stream(self, chunk: Optional[np.ndarray] = None) -> str:
+        if chunk is not None:
+            self._buffer.append(chunk)
+        if not self._buffer:
+            return ""
+        full = np.concatenate(self._buffer)
+        self._buffer = []
+        return self.recognize_audio(full, 16000)
+    
+    def recognize_audio(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
+        return self._client.recognize_audio(audio, sample_rate)

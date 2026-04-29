@@ -1,11 +1,13 @@
 """
 Agent 核心
-支持工具调用的智能代理
+支持工具调用的智能代理，支持后台执行和打断
 """
-from typing import Optional, List, Dict, Generator, Any
+from typing import Optional, List, Dict, Generator, Any, Callable
 import logging
 import json
 import time
+import threading
+import queue
 
 from ..api_infer.openai_infer import APIInfer
 from ..api_infer.config import DEEPSEEK_API_KEY, BASE_URL, MODEL
@@ -16,7 +18,7 @@ from ..memory.entity_extractor import get_entity_extractor
 from ..rag import get_rag_pipeline, RAGConfig
 from ..database.knowledge_dao import get_knowledge_dao
 from .tool_manager import ToolManager
-from ..tools import DateTimeTool, MemoryTool, SummaryTool, BrowserSearchTool, VisionTool, ScreenshotAnalyzeTool, ReminderTool, Live2DMotionTool, ExitAppTool, CameraCaptureTool, TerminalExecuteTool, SkillGeneratorTool
+from ..tools import DateTimeTool, MemoryTool, SummaryTool, BrowserSearchTool, VisionTool, ScreenshotAnalyzeTool, ReminderTool, Live2DMotionTool, ExitAppTool, CameraCaptureTool, TerminalExecuteTool, SkillGeneratorTool, DiagnoseTool, AutoFixTool, CodeModifyTool
 from ..utils.logging_config import setup_logging, get_logger, log_llm_request, log_llm_response, log_error
 
 try:
@@ -35,14 +37,19 @@ logger = get_logger("agent")
 class Agent:
     """
     智能代理
-    
+
     特性:
     1. 自主决定是否调用工具
     2. 支持多轮工具调用
     3. 自动总结对话并提取记忆
+    4. 支持后台执行工具，不阻塞对话
+    5. 支持打断当前操作
     """
-    
+
     MAX_TOOL_CALLS = 5  # 单次对话最大工具调用次数
+
+    # 耗时工具列表（这些工具应该后台执行）
+    BACKGROUND_TOOLS = {"browser_search", "browser_read", "browser_extract", "browser_deep_search"}
     
     def __init__(
         self,
@@ -54,29 +61,37 @@ class Agent:
     ):
         self.user_id = user_id
         self.enable_tools = enable_tools
-        
+
         # LLM 客户端
         self._llm = APIInfer(
             url=base_url or BASE_URL,
             api_key=api_key or DEEPSEEK_API_KEY,
             model_name=model or MODEL
         )
-        
+
         # 记忆管理
         self._context_manager = ContextManager(user_id=user_id)
         self._memory_manager = LongTermMemoryManager(user_id=user_id)
         self._knowledge_dao = get_knowledge_dao()
-        
+
         # 知识图谱
         self._knowledge_graph = get_knowledge_graph(user_id=user_id)
         self._entity_extractor = get_entity_extractor()
-        
+
         # RAG Pipeline（统一的检索增强生成）
         self._rag_pipeline = get_rag_pipeline(user_id=user_id)
-        
+
         # 工具管理
         self._tool_manager = ToolManager()
         self._setup_tools()
+
+        # 后台任务管理
+        self._background_tasks: queue.Queue = queue.Queue()
+        self._current_task_id: Optional[str] = None
+        self._task_counter: int = 0
+        self._task_lock = threading.Lock()
+        self._on_tool_status: Optional[Callable[[str, str, str], None]] = None  # callback(tool_name, status, message)
+        self._interrupted = False
     
     def _setup_tools(self):
         """初始化工具"""
@@ -137,6 +152,155 @@ class Agent:
         summary_tool = SummaryTool()
         summary_tool.set_llm_client(self._llm)
         self._summary_tool = summary_tool
+
+        # 注册自愈系统工具
+        # 深度诊断工具（传入 LLM 客户端用于智能分析）
+        self._tool_manager.register(DiagnoseTool(llm_client=self._llm))
+        # 自动修复工具（重启服务、回滚配置、重试操作、运行命令）
+        self._tool_manager.register(AutoFixTool())
+        # 代码修改工具（安全的文件读写、修改、回滚）
+        self._tool_manager.register(CodeModifyTool(project_root="E:/Avalon/Chaldea/Liying"))
+
+    def set_tool_status_callback(self, callback: Callable[[str, str, str], None]):
+        """设置工具状态回调（用于通知用户工具执行状态）
+
+        Args:
+            callback: 回调函数，参数为 (tool_name, status, message)
+                      status: "started", "completed", "failed"
+        """
+        self._on_tool_status = callback
+
+    def _notify_tool_status(self, tool_name: str, status: str, message: str = ""):
+        """通知工具状态"""
+        if self._on_tool_status:
+            try:
+                self._on_tool_status(tool_name, status, message)
+            except Exception:
+                pass
+
+    def _next_task_id(self) -> str:
+        """生成下一个任务 ID"""
+        with self._task_lock:
+            self._task_counter += 1
+            return f"task_{self._task_counter}"
+
+    def interrupt(self):
+        """打断当前操作"""
+        self._interrupted = True
+        logger.info("Agent: 用户请求打断")
+
+    def get_pending_results(self) -> List[Dict]:
+        """获取后台任务的完成结果（非阻塞）"""
+        results = []
+        while not self._background_tasks.empty():
+            try:
+                result = self._background_tasks.get_nowait()
+                results.append(result)
+            except queue.Empty:
+                break
+        return results
+
+    def _execute_tool_background(self, tool_name: str, arguments: Dict, task_id: str):
+        """在后台线程执行工具"""
+        try:
+            self._notify_tool_status(tool_name, "started", f"正在执行 {tool_name}...")
+            result = self._tool_manager.execute(tool_name, **arguments)
+            self._background_tasks.put({
+                "task_id": task_id,
+                "tool_name": tool_name,
+                "result": result,
+                "completed_at": time.time()
+            })
+            self._notify_tool_status(tool_name, "completed", f"{tool_name} 执行完成")
+        except Exception as e:
+            self._background_tasks.put({
+                "task_id": task_id,
+                "tool_name": tool_name,
+                "result": None,
+                "error": str(e),
+                "completed_at": time.time()
+            })
+            self._notify_tool_status(tool_name, "failed", f"{tool_name} 执行失败: {e}")
+
+    def _should_run_in_background(self, tool_name: str) -> bool:
+        """判断工具是否应该后台执行"""
+        return tool_name in self.BACKGROUND_TOOLS
+
+    def summarize_background_results(self, results: List[Dict]) -> str:
+        """让 LLM 总结后台任务的结果
+
+        Args:
+            results: 后台任务结果列表
+
+        Returns:
+            总结后的文本
+        """
+        if not results:
+            return ""
+
+        # 构建结果摘要
+        result_texts = []
+        original_queries = []
+
+        for result in results:
+            tool_name = result.get("tool_name", "")
+            task_result = result.get("result")
+            error = result.get("error")
+            task_id = result.get("task_id", "")
+
+            if error:
+                result_texts.append(f"工具 {tool_name} 执行失败: {error}")
+            elif task_result and task_result.success:
+                data = task_result.data
+                if isinstance(data, dict):
+                    # 搜索结果
+                    if "results" in data:
+                        query = data.get("query", "")
+                        if query:
+                            original_queries.append(query)
+                        results_list = data["results"]
+                        result_texts.append(
+                            f"工具 {tool_name} 搜索 '{query}' 找到 {len(results_list)} 个结果:\n"
+                            + "\n".join(
+                                f"  {i}. {r.get('title', '无标题')}\n     URL: {r.get('url', '')}\n     摘要: {r.get('description', '无')[:100]}"
+                                for i, r in enumerate(results_list[:5], 1)
+                            )
+                        )
+                    else:
+                        result_texts.append(f"工具 {tool_name} 执行完成: {str(data)[:200]}")
+                else:
+                    result_texts.append(f"工具 {tool_name} 执行完成")
+            else:
+                result_texts.append(f"工具 {tool_name} 执行完成")
+
+        if not result_texts:
+            return ""
+
+        # 调用 LLM 生成总结
+        summary_prompt = f"""你是一个助手，需要帮用户总结后台搜索的结果。
+
+用户之前的搜索结果如下：
+{chr(10).join(result_texts)}
+
+请用简洁的中文总结这些结果，包括：
+1. 搜索了什么
+2. 找到了哪些关键信息
+3. 如果是新闻或事件，给出主要要点
+
+注意：用自然口语，不要用 Markdown 格式，不要用 emoji。"""
+
+        try:
+            messages = [
+                {"role": "system", "content": "你是玲，一个温柔活泼的虚拟助手。用简洁自然的中文总结信息。"},
+                {"role": "user", "content": summary_prompt}
+            ]
+            response = self._llm.infer(messages=messages, stream=False)
+            summary = response.choices[0].message.content or ""
+            return summary.strip()
+        except Exception as e:
+            logger.error(f"LLM 总结失败: {e}")
+            # 降级：直接返回原始结果
+            return "\n".join(result_texts[:3])
     
     def start_chat(self) -> str:
         """开始聊天会话"""
@@ -147,12 +311,15 @@ class Agent:
     def end_chat(self, auto_summarize: bool = True) -> bool:
         """
         结束聊天会话
-        
+
         Args:
             auto_summarize: 是否自动总结并提取记忆
         """
         if auto_summarize:
-            self._auto_extract_memories()
+            try:
+                self._auto_extract_memories()
+            except (KeyboardInterrupt, Exception) as e:
+                logger.warning(f"会话结束时记忆提取跳过: {type(e).__name__}")
         
         success = self._context_manager.end_session()
         if success:
@@ -264,38 +431,46 @@ class Agent:
     ) -> Generator[str, None, None]:
         """
         发送消息并获取回复（流式）
-        
-        支持工具调用的完整流程
+
+        支持工具调用的完整流程，耗时工具会后台执行
         """
+        # 重置打断标志
+        self._interrupted = False
+
         # 确保有活跃会话
         if not self._context_manager.session_id:
             self.start_chat()
-        
+
         # 添加用户消息
         self._context_manager.add_user_message(message)
-        
+
         # 从用户消息中提取实体关系并更新知识图谱
         t0 = time.perf_counter()
         self._extract_and_update_kg(message)
         _log.debug(f"[耗时] Agent/KG: {time.perf_counter() - t0:.2f}s")
-        
+
         # 构建消息（含 RAG 检索、系统提示、历史）
         t0 = time.perf_counter()
         messages = self._build_messages(message)
         _log.debug(f"[耗时] Agent/RAG+构建: {time.perf_counter() - t0:.2f}s")
-        
+
         # 获取工具 schema
         tools = self._tool_manager.get_tools_schema() if self.enable_tools else None
-        
+
         # 调用 LLM
         full_response = []
         tool_call_count = 0
-        
+
         logger.info(f"👤 用户消息: {message[:50]}{'...' if len(message) > 50 else ''}")
-        
+
         while tool_call_count < self.MAX_TOOL_CALLS:
+            # 检查是否被打断
+            if self._interrupted:
+                yield "\n[已打断]"
+                return
+
             log_llm_request(len(messages), tools is not None)
-            
+
             t0 = time.perf_counter()
             response = self._llm.infer(
                 messages=messages,
@@ -303,15 +478,15 @@ class Agent:
                 tools=tools if self.enable_tools else None
             )
             _log.debug(f"[耗时] Agent/LLM: {time.perf_counter() - t0:.2f}s")
-            
+
             choice = response.choices[0]
             assistant_message = choice.message
-            
+
             # 检查是否有工具调用
             if hasattr(assistant_message, 'tool_calls') and assistant_message.tool_calls:
                 tool_call_count += 1
                 log_llm_response(True)
-                
+
                 # 添加助手消息（包含工具调用）
                 messages.append({
                     "role": "assistant",
@@ -328,44 +503,86 @@ class Agent:
                         for tc in assistant_message.tool_calls
                     ]
                 })
-                
-                # 执行工具调用
-                tool_calls_data = [
-                    {
-                        "id": tc.id,
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments
+
+                # 检查是否应该后台执行
+                background_tool_calls = []
+                foreground_tool_calls = []
+
+                for tc in assistant_message.tool_calls:
+                    tool_name = tc.function.name
+                    if self._should_run_in_background(tool_name):
+                        background_tool_calls.append(tc)
+                    else:
+                        foreground_tool_calls.append(tc)
+
+                # 后台执行耗时工具
+                if background_tool_calls:
+                    for tc in background_tool_calls:
+                        task_id = self._next_task_id()
+                        tool_name = tc.function.name
+                        try:
+                            arguments = json.loads(tc.function.arguments)
+                        except json.JSONDecodeError:
+                            arguments = {}
+
+                        # 启动后台线程
+                        thread = threading.Thread(
+                            target=self._execute_tool_background,
+                            args=(tool_name, arguments, task_id),
+                            daemon=True
+                        )
+                        thread.start()
+
+                    # 返回提示信息给用户
+                    tool_names = [tc.function.name for tc in background_tool_calls]
+                    yield f"\n[后台执行] 正在后台搜索，完成后会自动通知你。你可以继续聊天。\n"
+
+                # 前台执行普通工具
+                if foreground_tool_calls:
+                    tool_calls_data = [
+                        {
+                            "id": tc.id,
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments
+                            }
                         }
-                    }
-                    for tc in assistant_message.tool_calls
-                ]
-                t0 = time.perf_counter()
-                tool_results = self._tool_manager.execute_tool_calls(tool_calls_data)
-                _log.debug(f"[耗时] Agent/工具: {time.perf_counter() - t0:.2f}s")
-                
-                # 添加工具结果
-                messages.extend(tool_results)
-                
-                # 继续循环，让 LLM 处理工具结果
-                continue
-            
+                        for tc in foreground_tool_calls
+                    ]
+                    t0 = time.perf_counter()
+                    tool_results = self._tool_manager.execute_tool_calls(tool_calls_data)
+                    _log.debug(f"[耗时] Agent/工具: {time.perf_counter() - t0:.2f}s")
+
+                    # 添加工具结果
+                    messages.extend(tool_results)
+
+                    # 如果有后台工具，不继续循环，直接返回
+                    if background_tool_calls:
+                        break
+
+                    # 继续循环，让 LLM 处理工具结果
+                    continue
+                else:
+                    # 只有后台工具，直接返回
+                    break
+
             # 没有工具调用，返回最终回复
             content = assistant_message.content or ""
             full_response.append(content)
-            
+
             if stream:
                 # 模拟流式输出
                 for char in content:
                     yield char
             else:
                 yield content
-            
+
             break
-        
+
         # 保存助手回复
         final_response = "".join(full_response)
-        self._context_manager.add_assistant_message(final_response)
+        if final_response:
+            self._context_manager.add_assistant_message(final_response)
     
     def _build_messages(self, user_input: str) -> List[Dict]:
         """构建发送给 LLM 的消息"""

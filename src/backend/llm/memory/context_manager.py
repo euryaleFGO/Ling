@@ -255,3 +255,95 @@ class ContextManager:
             "created_at": session.get("created_at"),
             "updated_at": session.get("updated_at")
         }
+    
+    def switch_user(self, new_user_id: str) -> bool:
+        """
+        切换用户上下文
+        
+        Args:
+            new_user_id: 新用户 ID
+            
+        Returns:
+            是否成功
+        """
+        if new_user_id == self.user_id:
+            return True
+        
+        # 保存当前用户的会话状态
+        if self._current_session_id:
+            self.end_session(summary="用户切换")
+        
+        # 切换用户
+        old_user_id = self.user_id
+        self.user_id = new_user_id
+        
+        # 清除缓存的系统提示词
+        self.clear_cache()
+        
+        # 启动新用户的会话
+        self.start_session(metadata={"switched_from": old_user_id})
+        
+        logger.info(f"[上下文] 用户切换: {old_user_id} → {new_user_id}")
+        return True
+    
+    def add_user_message_with_speaker(
+        self,
+        content: str,
+        speaker_id: str
+    ) -> bool:
+        """
+        添加带说话人标记的用户消息
+        
+        Args:
+            content: 消息内容
+            speaker_id: 说话人 ID
+            
+        Returns:
+            是否成功
+        """
+        if not self._current_session_id:
+            self.start_session()
+        
+        return self._conversation_dao.add_message(
+            self._current_session_id,
+            role="user",
+            content=content,
+            metadata={"speaker_id": speaker_id}
+        )
+    
+    def get_history_by_speaker(
+        self,
+        speaker_id: str,
+        limit: Optional[int] = None
+    ) -> List[Dict]:
+        """
+        获取特定说话人的对话历史
+        
+        Args:
+            speaker_id: 说话人 ID
+            limit: 限制数量
+            
+        Returns:
+            消息列表
+        """
+        if not self._current_session_id:
+            return []
+        
+        all_messages = self._conversation_dao.get_messages(
+            self._current_session_id,
+            limit=None
+        )
+        
+        # 过滤出指定说话人的消息
+        filtered = [
+            msg for msg in all_messages
+            if msg.get("metadata", {}).get("speaker_id") == speaker_id
+        ]
+        
+        if limit:
+            filtered = filtered[-limit:]
+        
+        return [
+            {"role": msg["role"], "content": msg["content"]}
+            for msg in filtered
+        ]

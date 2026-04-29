@@ -28,7 +28,7 @@ src_path = project_root / "src"
 sys.path.insert(0, str(src_path))
 
 from core.audio_io import AudioInput, AudioOutput, AudioConfig
-from core.vad import VADConfig
+from core.vad import VADConfig, create_vad
 from core.log import log
 from core.exit_signal import consume_exit_request
 from core.emotion_classifier import EmotionClassifier
@@ -110,6 +110,15 @@ class ConversationConfig:
     notify_speaker_change: bool = True                  # 是否显示说话人切换通知
     allow_concurrent_speakers: bool = False             # 是否允许并发对话
     voiceprint_cleanup_days: int = 180                  # 声纹数据清理周期（天）
+    
+    # 流式打断配置（Barge-in / Interrupt）
+    enable_barge_in: bool = True                        # 是否启用流式打断功能
+    interrupt_vad_threshold: float = 0.5                # 打断检测 VAD 阈值（0.0-1.0）
+    interrupt_min_speech_ms: int = 300                  # 触发打断的最小语音时长（毫秒）
+    interrupt_response_time_ms: int = 200               # 打断响应时间目标（毫秒）
+    interrupt_context_mode: str = "reset"               # 打断上下文处理模式 ("reset" | "continue")
+    interrupt_feedback_enabled: bool = True             # 是否显示打断反馈
+    interrupt_sound_enabled: bool = False               # 是否播放打断提示音
 
 
 class ConversationManager:
@@ -161,6 +170,14 @@ class ConversationManager:
         self._diarization = None
         self._current_user_id: str = self.config.user_id
         self._on_speaker_change_callback: Optional[Callable] = None
+        
+        # 流式打断状态
+        self._interrupt_monitoring = False
+        self._interrupt_thread: Optional[threading.Thread] = None
+        self._interrupt_vad = None
+        self._interrupt_audio_input = None
+        self._interrupted_text: str = ""
+        self._interrupt_count: int = 0
         
         # 字幕服务
         self._subtitle_callback = None
@@ -1184,14 +1201,131 @@ class ConversationManager:
         s = re.sub(r"[,，]+", "，", s)
         return s.strip() or text.strip()
 
+    def _start_interrupt_monitoring(self):
+        """启动打断监听（后台线程）"""
+        if not self.config.enable_barge_in or self._interrupt_monitoring:
+            return
+        
+        self._interrupt_monitoring = True
+        self._interrupt_thread = threading.Thread(
+            target=self._interrupt_monitor_loop,
+            daemon=True,
+            name="InterruptMonitor"
+        )
+        self._interrupt_thread.start()
+        log.debug("[打断] 开始监听")
+    
+    def _stop_interrupt_monitoring(self):
+        """停止打断监听"""
+        if not self._interrupt_monitoring:
+            return
+        
+        self._interrupt_monitoring = False
+        
+        # 停止音频输入
+        if self._interrupt_audio_input:
+            try:
+                self._interrupt_audio_input.stop_listening()
+            except Exception:
+                pass
+        
+        # 等待线程结束
+        if self._interrupt_thread and self._interrupt_thread.is_alive():
+            self._interrupt_thread.join(timeout=0.5)
+        
+        log.debug("[打断] 停止监听")
+    
+    def _interrupt_monitor_loop(self):
+        """打断监听循环（后台线程）"""
+        try:
+            # 初始化独立的VAD和音频输入
+            vad_config = VADConfig.preset("aggressive")
+            vad_config.silence_threshold = self.config.interrupt_vad_threshold
+            self._interrupt_vad = create_vad(vad_config)
+            
+            # 使用小chunk降低延迟
+            chunk_size = int(self.config.sample_rate * 0.02)  # 20ms
+            audio_config = AudioConfig(
+                sample_rate=self.config.sample_rate,
+                chunk_size=chunk_size,
+                dtype="float32",
+                vad_config=vad_config
+            )
+            self._interrupt_audio_input = AudioInput(audio_config)
+            self._interrupt_audio_input.start_listening()
+            
+            speech_start_time = None
+            speech_frames = 0
+            min_speech_frames = int(self.config.interrupt_min_speech_ms / 20)
+            
+            while self._interrupt_monitoring:
+                try:
+                    chunk = self._interrupt_audio_input.read_chunk()
+                    if chunk is None or len(chunk) == 0:
+                        time.sleep(0.01)
+                        continue
+                    
+                    # VAD检测
+                    is_speech = self._interrupt_vad.detect_speech(chunk, self.config.sample_rate)
+                    
+                    if is_speech:
+                        if speech_start_time is None:
+                            speech_start_time = time.time()
+                            speech_frames = 1
+                        else:
+                            speech_frames += 1
+                            
+                            # 达到最小语音时长，触发打断
+                            if speech_frames >= min_speech_frames:
+                                log.info(f"[打断] 检测到语音活动 (时长: {speech_frames * 20}ms)")
+                                self._interrupt_count += 1
+                                
+                                # 停止TTS播放
+                                if self._audio_output:
+                                    self._audio_output.stop()
+                                
+                                # 显示打断反馈
+                                if self.config.interrupt_feedback_enabled:
+                                    self._send_subtitle("⚠️ 已打断", is_final=True, emotion="neutral")
+                                
+                                # 记录打断事件
+                                log.info(f"[打断统计] 总打断次数: {self._interrupt_count}")
+                                
+                                # 停止监听
+                                self._interrupt_monitoring = False
+                                break
+                    else:
+                        speech_start_time = None
+                        speech_frames = 0
+                    
+                    time.sleep(0.01)
+                    
+                except Exception as e:
+                    log.error(f"[打断] 监听循环错误: {e}")
+                    break
+        
+        except Exception as e:
+            log.error(f"[打断] 监听线程崩溃: {e}")
+        finally:
+            if self._interrupt_audio_input:
+                try:
+                    self._interrupt_audio_input.stop_listening()
+                except Exception:
+                    pass
+
     def _speak(self, text: str):
-        """TTS 播放（流式：边合成边播放，同时发送 RMS 驱动嘴型）"""
+        """TTS 播放（流式：边合成边播放，同时发送 RMS 驱动嘴型，支持打断）"""
         if not text:
             return
         text = self._text_for_tts(text)
+        self._interrupted_text = text
 
         if self._tts:
             try:
+                # 启动打断监听
+                if self.config.enable_barge_in:
+                    self._start_interrupt_monitoring()
+                
                 # 使用流式合成 + 边生成边播放
                 first_chunk = True
                 t_tts_start = time.perf_counter()
@@ -1204,6 +1338,11 @@ class ConversationManager:
                 for chunk_data in self._tts.generate_audio_streaming(
                     text, use_clone=True, max_workers=2
                 ):
+                    # 检查是否被打断
+                    if not self._interrupt_monitoring and self.config.enable_barge_in:
+                        log.debug("[TTS] 播放被打断")
+                        break
+                    
                     # 兼容新版（含 visemes）和旧版（3元组）
                     if len(chunk_data) == 4:
                         audio, seg_idx, total, visemes = chunk_data
@@ -1260,6 +1399,10 @@ class ConversationManager:
                         blocking=True
                     )
 
+                # 停止打断监听
+                if self.config.enable_barge_in:
+                    self._stop_interrupt_monitoring()
+
                 # 播放结束，重置嘴型
                 if self._on_viseme:
                     self._on_viseme(0.0, 0.0)
@@ -1278,6 +1421,10 @@ class ConversationManager:
                 log.error(f"TTS 错误: {e}")
                 import traceback
                 traceback.print_exc()
+            finally:
+                # 确保停止打断监听
+                if self.config.enable_barge_in:
+                    self._stop_interrupt_monitoring()
         
         # TTS 不可用，只显示文本
         log.debug("TTS 不可用，文本输出")

@@ -79,6 +79,7 @@ class VisionTool(BaseTool):
                     enable_captioner=True,
                     enable_detector=True,
                     enable_ocr=True,
+                    enable_vlm=True,           # 启用 VLM 视觉语言模型
                     detector_model="yolov8n",  # 最轻量
                     device="auto",
                     use_fp16=True,
@@ -217,11 +218,12 @@ class ScreenshotAnalyzeTool(BaseTool):
         if self._vision_engine is None:
             from backend.vision import VisionEngine, VisionConfig
             
-            # 截图分析配置：OCR 为主
+            # 截图分析配置：OCR 为主，VLM 辅助理解
             config = VisionConfig(
                 enable_captioner=False,   # 截图不需要描述
                 enable_detector=True,     # 检测 UI 元素
                 enable_ocr=True,          # 主要是 OCR
+                enable_vlm=True,          # VLM 辅助理解截图内容
                 detector_model="yolov8n",
                 ocr_confidence=0.3,       # 降低阈值，识别更多文字
                 device="auto",

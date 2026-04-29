@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  asr-server:
+    build:
+      context: ../..
+      dockerfile: deploy/asr_server/Dockerfile
+    container_name: asr-server
+    ports:
+      - "5002:5002"
+    volumes:
+      # 挂载模型目录（避免重复下载）
+      - ../../models:/app/models
+      # 挂载数据目录
+      - ../../data:/app/data
+      # 挂载日志目录
+      - ./logs:/app/deploy/asr_server/logs
+      # 挂载缓存目录
+      - ./.cache:/app/.cache
+    environment:
+      # GPU 设备（如果有）
+      - CUDA_VISIBLE_DEVICES=0
+      # FunASR 缓存目录
+      - FUNASR_CACHE_DIR=/app/.cache/funasr
+    # GPU 支持（需要 nvidia-docker）
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

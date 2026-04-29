@@ -1,0 +1,21 @@
+# ASR 服务器依赖
+
+# Web 框架
+flask>=2.3.0
+requests>=2.31.0
+
+# 音频处理
+numpy>=1.24.0
+soundfile>=0.12.1
+
+# FunASR（语音识别）
+funasr>=1.0.0
+modelscope>=1.9.0
+
+# Transformers（情绪识别）
+transformers>=4.30.0
+torch>=2.0.0
+
+# 可选：生产环境部署
+# gunicorn>=21.2.0
+# uwsgi>=2.0.22

@@ -3,12 +3,16 @@
 使用 Playwright 自动控制浏览器进行网络搜索并阅读内容
 """
 import asyncio
+import logging
 import re
 from typing import List, Optional
 from .base_tool import BaseTool, ToolParameter, ToolResult
 
+logger = logging.getLogger("browser_tool")
+
 # 延迟导入 Playwright
 _playwright_available = None
+_stealth_available = None
 
 
 def _check_playwright():
@@ -21,6 +25,18 @@ def _check_playwright():
         except ImportError:
             _playwright_available = False
     return _playwright_available
+
+
+def _check_stealth():
+    """检查 playwright-stealth 是否可用"""
+    global _stealth_available
+    if _stealth_available is None:
+        try:
+            from playwright_stealth import Stealth
+            _stealth_available = True
+        except ImportError:
+            _stealth_available = False
+    return _stealth_available
 
 
 class BrowserSearchTool(BaseTool):
@@ -58,10 +74,14 @@ class BrowserSearchTool(BaseTool):
     def description(self) -> str:
         return """使用浏览器自动搜索网络信息并阅读网页内容。
 当用户询问以下问题时使用：
-- 需要实时搜索网络获取最新信息
+- 需要实时搜索网络获取最新信息（如新闻、天气、股价）
 - 需要查找特定网站的内容
 - 需要阅读在线文档或网页
 - 搜索新闻、技术文章、产品信息等
+
+重要：此工具用于搜索互联网，不是在本地项目中搜索文件！
+- 如果用户说"搜一下项目是否用了XXX"、"在代码中搜索"，应该使用 terminal_execute 工具（grep/findstr）
+- 只有当用户明确要搜索网络信息时才使用此工具
 
 此工具会打开 Edge 浏览器，自动在 Bing 搜索引擎中搜索，并提取搜索结果或网页内容。
 支持实时检测和处理人机验证（滑块、点击验证等）。"""
@@ -111,18 +131,30 @@ class BrowserSearchTool(BaseTool):
         if self._browser is None:
             from playwright.sync_api import sync_playwright
             self._playwright = sync_playwright().start()
+
+            # 反检测启动参数
+            stealth_args = [
+                '--disable-blink-features=AutomationControlled',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--disable-infobars',
+                '--disable-dev-shm-usage',
+                '--no-first-run',
+                '--no-default-browser-check',
+                '--disable-extensions',
+            ]
+
             # 使用 Edge 浏览器
             try:
                 self._browser = self._playwright.chromium.launch(
                     headless=self._headless,
-                    channel="msedge",  # 使用 Microsoft Edge
-                    args=['--disable-blink-features=AutomationControlled']
+                    channel="msedge",
+                    args=stealth_args
                 )
             except Exception:
                 # 如果 Edge 不可用，尝试使用 Chromium
                 self._browser = self._playwright.chromium.launch(
                     headless=self._headless,
-                    args=['--disable-blink-features=AutomationControlled']
+                    args=stealth_args
                 )
     
     def _close_browser(self):
@@ -137,47 +169,56 @@ class BrowserSearchTool(BaseTool):
     def _detect_captcha(self, page) -> bool:
         """
         检测页面是否出现人机验证
-        
+
         Returns:
             True = 检测到验证，False = 未检测到
         """
-        captcha_indicators = [
-            # 常见的验证码选择器
+        # 先检查明确的验证码元素（高置信度）
+        captcha_selectors = [
             "#captcha",
             ".captcha",
             "iframe[src*='captcha']",
             "iframe[src*='recaptcha']",
             "iframe[title*='reCAPTCHA']",
-            ".geetest_radar_tip",  # 极验滑块
-            "#nc_1_wrapper",  # 阿里云滑块
-            ".yidun",  # 网易易盾
-            ".tcaptcha",  # 腾讯验证码
-            "[id*='verify']",
-            "[class*='verify']",
-            "[id*='slider']",
-            "[class*='slider']",
+            ".geetest_radar_tip",
+            "#nc_1_wrapper",
+            ".yidun",
+            ".tcaptcha",
         ]
-        
-        for selector in captcha_indicators:
+
+        for selector in captcha_selectors:
             try:
                 if page.locator(selector).count() > 0:
                     return True
             except Exception:
                 continue
 
-        # 检测页面文本中的验证提示
+        # 只检测明确的 CAPTCHA 提示文本，避免误判
         try:
-            body_text = page.locator("body").inner_text().lower()
-            captcha_keywords = [
-                "验证", "captcha", "verification", "人机",
-                "滑块", "slider", "拖动", "点击验证", "请完成安全验证"
-            ]
-            for keyword in captcha_keywords:
-                if keyword in body_text:
-                    return True
+            # 检查标题
+            title = page.title().lower()
+            if "captcha" in title or "verify" in title:
+                return True
+
+            # 检查是否有验证码相关的表单/按钮
+            captcha_form = page.locator("form[action*='captcha'], form[action*='verify']").count()
+            if captcha_form > 0:
+                return True
+
+            # 检查是否有明确的"请完成验证"大标题
+            heading_selectors = ["h1", "h2", ".main-message", "#error-code"]
+            for sel in heading_selectors:
+                try:
+                    elem = page.locator(sel).first
+                    if elem.count() > 0:
+                        text = elem.text_content().strip().lower()
+                        if any(kw in text for kw in ["请完成安全验证", "captcha", "人机验证", "请进行验证"]):
+                            return True
+                except Exception:
+                    continue
         except Exception:
             pass
-        
+
         return False
     
     def _handle_captcha(self, page, operation: str = "搜索") -> bool:
@@ -333,44 +374,141 @@ class BrowserSearchTool(BaseTool):
     def _search_bing(self, query: str, max_results: int = 5) -> dict:
         """
         在 Bing 上搜索
-        
+
         Returns:
             搜索结果字典
         """
         self._ensure_browser()
-        
+
         context = self._browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+            viewport={"width": 1920, "height": 1080},
+            locale="zh-CN",
+            timezone_id="Asia/Shanghai",
         )
         page = context.new_page()
+
+        # 使用 playwright-stealth 进行全面反检测
+        if _check_stealth():
+            from playwright_stealth import Stealth
+            stealth = Stealth(
+                navigator_languages_override=("zh-CN", "zh"),
+                navigator_platform_override="Win32",
+            )
+            stealth.apply_stealth_sync(page)
+            logger.debug("已应用 playwright-stealth 反检测")
+
         page.set_default_timeout(self._timeout)
-        
+
         try:
-            # 访问 Bing
-            page.goto("https://www.bing.com")
-            
-            # 等待搜索框并输入
-            search_box = page.locator('input[name="q"]')
+            # 访问 Bing（等待页面基本加载完成）
+            page.goto("https://www.bing.com", wait_until="domcontentloaded")
+            page.wait_for_timeout(2000)
+
+            # 处理 Bing Cookie 同意弹窗
+            try:
+                accept_selectors = [
+                    "button:has-text('接受')",
+                    "button:has-text('Accept')",
+                    "button:has-text('同意')",
+                    "#bnp_btn_accept",  # Bing 接受按钮
+                    ".bnp_btn_accept",
+                ]
+                for sel in accept_selectors:
+                    btn = page.locator(sel).first
+                    if btn.count() > 0 and btn.is_visible():
+                        btn.click()
+                        page.wait_for_timeout(1000)
+                        logger.debug("已处理 Bing Cookie 同意弹窗")
+                        break
+            except Exception:
+                pass
+
+            # 等待搜索框出现（使用多个备选选择器）
+            search_selectors = [
+                '#sb_form_q',                # Bing 表单搜索框（最新）
+                'textarea[name="q"]',        # 某些地区用 textarea
+                'input[type="search"]',      # 搜索类型 input
+                'input[name="q"]',           # 旧版 Bing 搜索框
+                'input.b_searchbox',         # Bing 搜索框 class
+            ]
+            search_box = None
+            for sel in search_selectors:
+                try:
+                    loc = page.locator(sel)
+                    loc.wait_for(state="visible", timeout=5000)
+                    search_box = loc
+                    logger.debug(f"找到搜索框: {sel}")
+                    break
+                except Exception:
+                    continue
+
+            if search_box is None:
+                raise RuntimeError(
+                    "找不到 Bing 搜索框。可能原因：\n"
+                    "1. 网络问题导致页面未加载\n"
+                    "2. Bing 页面结构已变化\n"
+                    "3. 被 Bing 反爬拦截"
+                )
+
             search_box.fill(query)
             search_box.press("Enter")
-            
-            # 等待搜索结果加载
-            page.wait_for_selector("#b_results", timeout=self._timeout)
-            
-            # 额外等待确保内容完全渲染
-            page.wait_for_timeout(2000)
-            
+
+            # 等待页面加载
+            page.wait_for_timeout(5000)
+
             # 检测是否有人机验证
             if self._detect_captcha(page):
                 if not self._handle_captcha(page, "搜索"):
                     raise RuntimeError("人机验证未通过，无法继续搜索")
-                # 验证通过后，可能需要重新等待结果
-                page.wait_for_selector("#b_results", timeout=self._timeout)
-                page.wait_for_timeout(2000)
-            
-            # 提取搜索结果（获取更多以应对广告过滤）
+                # 验证通过后，重新等待结果
+                page.wait_for_timeout(3000)
+
+            # 提取搜索结果（尝试多个选择器）
             results = []
-            result_items = page.locator("#b_results .b_algo").all()
+            result_selectors = [
+                ".b_algo",              # Bing 搜索结果项（最可靠）
+                "#b_results .b_algo",   # 标准 Bing
+                "li.b_algo",            # 直接匹配
+                "#b_content .b_algo",   # 备用
+            ]
+            result_items = []
+            for sel in result_selectors:
+                items = page.locator(sel).all()
+                if items:
+                    result_items = items
+                    logger.debug(f"提取搜索结果: 选择器={sel}, 数量={len(items)}")
+                    break
+
+            # 如果还是没找到，等待更长时间再试
+            if not result_items:
+                page.wait_for_timeout(3000)
+                for sel in result_selectors:
+                    items = page.locator(sel).all()
+                    if items:
+                        result_items = items
+                        logger.debug(f"重试提取搜索结果: 选择器={sel}, 数量={len(items)}")
+                        break
+
+            # 如果都没找到，尝试提取页面所有链接作为备选
+            if not result_items:
+                logger.warning("未找到标准搜索结果，尝试提取页面链接")
+                all_links = page.locator("a[href]").all()
+                for link in all_links[:max_results * 3]:
+                    try:
+                        href = link.get_attribute("href") or ""
+                        text = link.inner_text() or ""
+                        if href.startswith("http") and len(text) > 10:
+                            results.append({
+                                "index": len(results) + 1,
+                                "title": text[:100],
+                                "url": href,
+                                "description": ""
+                            })
+                            if len(results) >= max_results:
+                                break
+                    except Exception:
+                        continue
             
             # 最多遍历max_results * 2个结果，确保过滤广告后仍有足够结果
             for i, item in enumerate(result_items[:max_results * 2]):
@@ -463,22 +601,182 @@ class BrowserSearchTool(BaseTool):
                 print(f"\n👀 浏览器将在 {self._keep_alive_duration/1000:.1f} 秒后关闭...")
                 page.wait_for_timeout(self._keep_alive_duration)
                 context.close()
-    
+
+    def _search_google(self, query: str, max_results: int = 5) -> dict:
+        """
+        在 Google 上搜索（Bing 失败时的备选方案）
+
+        Returns:
+            搜索结果字典
+        """
+        self._ensure_browser()
+
+        context = self._browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080},
+            locale="zh-CN",
+            timezone_id="Asia/Shanghai",
+        )
+        page = context.new_page()
+
+        # 使用 playwright-stealth 进行全面反检测
+        if _check_stealth():
+            from playwright_stealth import Stealth
+            stealth = Stealth(
+                navigator_languages_override=("zh-CN", "zh"),
+                navigator_platform_override="Win32",
+            )
+            stealth.apply_stealth_sync(page)
+
+        page.set_default_timeout(self._timeout)
+
+        try:
+            # 访问 Google
+            page.goto("https://www.google.com", wait_until="domcontentloaded")
+            page.wait_for_timeout(2000)
+
+            # 处理 Cookie 同意弹窗
+            try:
+                accept_selectors = [
+                    "button:has-text('全部接受')",
+                    "button:has-text('Accept all')",
+                    "button:has-text('I agree')",
+                    "#L2AGLb",  # Google 接受按钮 ID
+                    "form[action*='consent'] button",
+                ]
+                for sel in accept_selectors:
+                    btn = page.locator(sel).first
+                    if btn.count() > 0 and btn.is_visible():
+                        btn.click()
+                        page.wait_for_timeout(1000)
+                        logger.debug("已处理 Google Cookie 同意弹窗")
+                        break
+            except Exception:
+                pass
+
+            # 等待搜索框出现
+            search_selectors = [
+                'textarea[name="q"]',        # Google 搜索框
+                'input[name="q"]',           # 备用
+                '#search-input textarea',    # Google 搜索输入框
+            ]
+            search_box = None
+            for sel in search_selectors:
+                try:
+                    loc = page.locator(sel)
+                    loc.wait_for(state="visible", timeout=5000)
+                    search_box = loc
+                    logger.debug(f"找到 Google 搜索框: {sel}")
+                    break
+                except Exception:
+                    continue
+
+            if search_box is None:
+                raise RuntimeError("找不到 Google 搜索框")
+
+            search_box.fill(query)
+            search_box.press("Enter")
+
+            # 等待搜索结果
+            result_selectors = [
+                "#search",                  # Google 搜索结果容器
+                "#rso",                     # 搜索结果
+                ".g",                       # 搜索结果项
+            ]
+            result_found = False
+            for sel in result_selectors:
+                try:
+                    page.wait_for_selector(sel, timeout=8000)
+                    result_found = True
+                    break
+                except Exception:
+                    continue
+
+            if not result_found:
+                try:
+                    page.wait_for_load_state("networkidle", timeout=10000)
+                except Exception:
+                    pass
+
+            page.wait_for_timeout(2000)
+
+            # 检测 CAPTCHA
+            if self._detect_captcha(page):
+                if not self._handle_captcha(page, "搜索"):
+                    raise RuntimeError("人机验证未通过")
+                page.wait_for_timeout(3000)
+
+            # 提取搜索结果
+            results = []
+            result_items = page.locator("#search .g, #rso .g").all()
+
+            for i, item in enumerate(result_items[:max_results * 2]):
+                if len(results) >= max_results:
+                    break
+                try:
+                    title_elem = item.locator("h3").first
+                    title = title_elem.text_content() or "" if title_elem.count() > 0 else ""
+                    title = title.strip()
+
+                    link_elem = item.locator("a[href]").first
+                    url = link_elem.get_attribute("href") or "" if link_elem.count() > 0 else ""
+
+                    desc_elem = item.locator(".VwiC3b, .IsZvec, [data-sncf]").first
+                    description = desc_elem.text_content() or "" if desc_elem.count() > 0 else ""
+                    description = description.strip()
+
+                    if title and url and url.startswith("http"):
+                        results.append({
+                            "index": len(results) + 1,
+                            "title": title,
+                            "url": url,
+                            "description": description
+                        })
+                except Exception:
+                    continue
+
+            return {
+                "query": query,
+                "result_count": len(results),
+                "results": results,
+                "engine": "google"
+            }
+        finally:
+            if not self._keep_alive:
+                context.close()
+            else:
+                page.wait_for_timeout(self._keep_alive_duration)
+                context.close()
+
     def _read_page(self, url: str) -> dict:
         """
         读取网页内容
-        
+
         Returns:
             页面内容字典
         """
         self._ensure_browser()
-        
+
         context = self._browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+            viewport={"width": 1920, "height": 1080},
+            locale="zh-CN",
+            timezone_id="Asia/Shanghai",
         )
         page = context.new_page()
+
+        # 使用 playwright-stealth 进行全面反检测
+        if _check_stealth():
+            from playwright_stealth import Stealth
+            stealth = Stealth(
+                navigator_languages_override=("zh-CN", "zh"),
+                navigator_platform_override="Win32",
+            )
+            stealth.apply_stealth_sync(page)
+            logger.debug("已应用 playwright-stealth 反检测")
+
         page.set_default_timeout(self._timeout)
-        
+
         try:
             # 使用 networkidle 等待页面完全加载
             page.goto(url, wait_until="networkidle", timeout=self._timeout)
@@ -662,9 +960,23 @@ class BrowserSearchTool(BaseTool):
         
         try:
             if action == "search":
-                # 搜索模式
-                result = self._search_bing(query, max_results)
-                return ToolResult(success=True, data=result)
+                # 搜索模式：先尝试 Bing，失败则尝试 Google
+                try:
+                    result = self._search_bing(query, max_results)
+                    if result.get("result_count", 0) > 0:
+                        return ToolResult(success=True, data=result)
+                    logger.warning("Bing 无结果，尝试 Google")
+                except Exception as e:
+                    logger.warning(f"Bing 搜索失败: {e}，尝试 Google")
+
+                try:
+                    result = self._search_google(query, max_results)
+                    return ToolResult(success=True, data=result)
+                except Exception as e:
+                    return ToolResult(
+                        success=False,
+                        error=f"Bing 和 Google 搜索均失败。Bing: 人机验证; Google: {str(e)[:100]}"
+                    )
             
             elif action == "read":
                 # 阅读模式（query 作为 URL）

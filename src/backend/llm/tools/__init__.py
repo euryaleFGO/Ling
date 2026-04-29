@@ -16,6 +16,9 @@ from .live2d_motion_tool import Live2DMotionTool
 from .exit_app_tool import ExitAppTool
 from .terminal_tool import TerminalExecuteTool
 from .skill_generator_tool import SkillGeneratorTool
+from .diagnose_tool import DiagnoseTool
+from .auto_fix_tool import AutoFixTool
+from .code_modify_tool import CodeModifyTool
 
 __all__ = [
     "BaseTool",
@@ -36,4 +39,7 @@ __all__ = [
     "ExitAppTool",
     "TerminalExecuteTool",
     "SkillGeneratorTool",
+    "DiagnoseTool",
+    "AutoFixTool",
+    "CodeModifyTool",
 ]

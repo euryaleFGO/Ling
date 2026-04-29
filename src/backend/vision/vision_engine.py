@@ -19,6 +19,7 @@ class VisionModule(Enum):
     CAPTIONER = "captioner"    # 图像描述
     DETECTOR = "detector"      # 目标检测
     OCR = "ocr"               # 文字识别
+    VLM = "vlm"               # 视觉语言模型
 
 
 @dataclass
@@ -28,12 +29,15 @@ class VisionConfig:
     enable_captioner: bool = True   # 启用图像描述
     enable_detector: bool = True    # 启用目标检测
     enable_ocr: bool = True         # 启用 OCR
+    enable_vlm: bool = False        # 启用 VLM（默认关闭，按需启用）
     
     # 模型配置
     captioner_model: str = "Salesforce/blip-image-captioning-base"
     detector_model: str = "yolov8n"  # nano 版本，最轻量
     ocr_languages: List[str] = field(default_factory=lambda: ["ch_sim", "en"])
     ocr_backend: str = "easyocr"
+    vlm_model: str = "SmolVLM-256M"  # VLM 模型名称
+    vlm_model_path: Optional[str] = None  # VLM 模型路径（None 使用默认路径）
     
     # 设备配置
     device: str = "auto"             # "auto", "cpu", "cuda"
@@ -54,6 +58,7 @@ class VisionResult:
     objects_detail: Optional[str] = None    # 物体详情
     ocr_text: Optional[str] = None          # OCR 文字
     ocr_lines: Optional[List[str]] = None   # OCR 文字列表
+    vlm_response: Optional[str] = None      # VLM 响应
     
     # 元信息
     image_size: Optional[tuple] = None
@@ -74,12 +79,15 @@ class VisionResult:
             return json.dumps({
                 "caption": self.caption,
                 "objects": self.objects,
-                "text": self.ocr_text
+                "text": self.ocr_text,
+                "vlm_response": self.vlm_response
             }, ensure_ascii=False, indent=2)
         
         elif style == "compact":
             parts = []
-            if self.caption:
+            if self.vlm_response:
+                parts.append(f"VLM: {self.vlm_response}")
+            elif self.caption:
                 parts.append(f"图像: {self.caption}")
             if self.objects:
                 parts.append(f"物体: {', '.join(self.objects)}")
@@ -89,6 +97,9 @@ class VisionResult:
         
         else:  # detailed
             lines = ["[图像分析结果]"]
+            
+            if self.vlm_response:
+                lines.append(f"🤖 VLM 分析: {self.vlm_response}")
             
             if self.caption:
                 lines.append(f"📝 图像描述: {self.caption}")
@@ -156,6 +167,7 @@ class VisionEngine:
         self._captioner = None
         self._detector = None
         self._ocr = None
+        self._vlm = None
         
         # 加载状态
         self._modules_loaded = set()
@@ -194,6 +206,18 @@ class VisionEngine:
             )
         return self._ocr
 
+    def _get_vlm(self):
+        """获取 VLM 模块"""
+        if self._vlm is None and self.config.enable_vlm:
+            from .models.vlm import VLMModel
+            self._vlm = VLMModel(
+                model_path=self.config.vlm_model_path,
+                model_name=self.config.vlm_model,
+                device=self.config.device,
+                use_fp16=self.config.use_fp16
+            )
+        return self._vlm
+
     def analyze(
         self,
         image: Union[str, Path, Image.Image, np.ndarray],
@@ -230,6 +254,8 @@ class VisionEngine:
                 modules.append(VisionModule.DETECTOR)
             if self.config.enable_ocr:
                 modules.append(VisionModule.OCR)
+            if self.config.enable_vlm:
+                modules.append(VisionModule.VLM)
         
         # 执行各模块分析
         for module in modules:
@@ -240,6 +266,8 @@ class VisionEngine:
                     self._run_detector(image, result)
                 elif module == VisionModule.OCR:
                     self._run_ocr(image, result)
+                elif module == VisionModule.VLM:
+                    self._run_vlm(image, result)
             except Exception as e:
                 print(f"[Vision] {module.value} 执行失败: {e}")
         
@@ -271,6 +299,14 @@ class VisionEngine:
             result.ocr_text = ocr_result.get_all_text(separator=" | ")
             result.ocr_lines = ocr_result.get_text_list()
             result.modules_used.append("ocr")
+
+    def _run_vlm(self, image, result: VisionResult, prompt: str = "请详细描述这张图片的内容"):
+        """运行 VLM"""
+        vlm = self._get_vlm()
+        if vlm:
+            vlm_result = vlm.generate(image, prompt)
+            result.vlm_response = vlm_result.text
+            result.modules_used.append("vlm")
 
     def analyze_for_llm(
         self,
@@ -335,6 +371,48 @@ class VisionEngine:
             return ocr.recognize_simple(image)
         return ""
 
+    def vlm_analyze(
+        self,
+        image: Union[str, Path, Image.Image, np.ndarray],
+        prompt: str = "请详细描述这张图片的内容"
+    ) -> str:
+        """
+        使用 VLM 分析图像
+        
+        Args:
+            image: 图像输入
+            prompt: 提示词
+            
+        Returns:
+            VLM 生成的文本
+        """
+        vlm = self._get_vlm()
+        if vlm:
+            result = vlm.generate(image, prompt)
+            return result.text
+        return ""
+
+    def vlm_chat(
+        self,
+        image: Union[str, Path, Image.Image, np.ndarray],
+        messages: List[dict]
+    ) -> str:
+        """
+        使用 VLM 进行多轮对话
+        
+        Args:
+            image: 图像输入
+            messages: 对话历史
+            
+        Returns:
+            VLM 生成的回复
+        """
+        vlm = self._get_vlm()
+        if vlm:
+            result = vlm.chat(image, messages)
+            return result.text
+        return ""
+
     def unload(self, modules: List[VisionModule] = None):
         """
         卸载模块释放资源
@@ -343,7 +421,7 @@ class VisionEngine:
             modules: 要卸载的模块列表，None 则卸载所有
         """
         if modules is None:
-            modules = [VisionModule.CAPTIONER, VisionModule.DETECTOR, VisionModule.OCR]
+            modules = [VisionModule.CAPTIONER, VisionModule.DETECTOR, VisionModule.OCR, VisionModule.VLM]
         
         for module in modules:
             if module == VisionModule.CAPTIONER and self._captioner:
@@ -355,6 +433,9 @@ class VisionEngine:
             elif module == VisionModule.OCR and self._ocr:
                 self._ocr.unload()
                 self._ocr = None
+            elif module == VisionModule.VLM and self._vlm:
+                self._vlm.unload()
+                self._vlm = None
         
         # 清理 GPU 缓存
         try:
@@ -373,6 +454,8 @@ class VisionEngine:
             loaded.append("detector")
         if self._ocr and self._ocr.is_loaded():
             loaded.append("ocr")
+        if self._vlm and self._vlm.is_loaded():
+            loaded.append("vlm")
         return loaded
 
 
