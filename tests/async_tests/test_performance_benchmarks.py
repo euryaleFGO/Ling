@@ -15,9 +15,12 @@ from unittest.mock import Mock, AsyncMock
 import sys
 import os
 import statistics
+import pytest
 
-# 添加项目根目录到路径
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+# 添加项目根目录和 src 目录到路径
+_project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+sys.path.insert(0, _project_root)
+sys.path.insert(0, os.path.join(_project_root, 'src'))
 
 from src.core.conversation_manager_async import (
     AsyncConversationManager,
@@ -27,11 +30,11 @@ from src.core.conversation_manager_async import (
 
 class TestPerformanceBenchmarks:
     """性能基准测试"""
-    
-    def __init__(self):
+
+    def setup_method(self):
         self.test_results: List[Dict[str, Any]] = []
         self.manager: AsyncConversationManager = None
-        
+
     async def setup(self):
         """设置测试环境"""
         # 创建配置
@@ -90,6 +93,7 @@ class TestPerformanceBenchmarks:
         if self.manager:
             self.manager.stop_sync()
     
+    @pytest.mark.asyncio
     async def test_asr_first_chunk_latency(self):
         """测试 1: ASR 首包延迟 <100ms"""
         print("\n" + "="*60)
@@ -148,6 +152,7 @@ class TestPerformanceBenchmarks:
                 "error": str(e),
             })
     
+    @pytest.mark.asyncio
     async def test_tts_first_chunk_latency(self):
         """测试 2: TTS 首包延迟 <200ms"""
         print("\n" + "="*60)
@@ -206,6 +211,7 @@ class TestPerformanceBenchmarks:
                 "error": str(e),
             })
     
+    @pytest.mark.asyncio
     async def test_speaker_recognition_latency(self):
         """测试 3: 声纹识别延迟 <500ms"""
         print("\n" + "="*60)
@@ -233,6 +239,7 @@ class TestPerformanceBenchmarks:
                 "error": str(e),
             })
     
+    @pytest.mark.asyncio
     async def test_total_conversation_latency(self):
         """测试 4: 整体对话延迟 <1.5s"""
         print("\n" + "="*60)
@@ -294,6 +301,7 @@ class TestPerformanceBenchmarks:
                 "error": str(e),
             })
     
+    @pytest.mark.asyncio
     async def test_tts_cache_performance(self):
         """测试 5: TTS 缓存性能"""
         print("\n" + "="*60)

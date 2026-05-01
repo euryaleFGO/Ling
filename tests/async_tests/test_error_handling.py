@@ -14,9 +14,12 @@ from typing import List, Dict, Any
 from unittest.mock import Mock, AsyncMock
 import sys
 import os
+import pytest
 
-# 添加项目根目录到路径
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+# 添加项目根目录和 src 目录到路径
+_project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+sys.path.insert(0, _project_root)
+sys.path.insert(0, os.path.join(_project_root, 'src'))
 
 from src.core.conversation_manager_async import (
     AsyncConversationManager,
@@ -27,11 +30,11 @@ from src.core.conversation_manager_async import (
 
 class TestErrorHandling:
     """错误处理和降级测试"""
-    
-    def __init__(self):
+
+    def setup_method(self):
         self.test_results: List[Dict[str, Any]] = []
         self.manager: AsyncConversationManager = None
-        
+
     async def setup(self, config_overrides: dict = None):
         """设置测试环境"""
         # 创建配置
@@ -62,6 +65,7 @@ class TestErrorHandling:
         if self.manager:
             self.manager.stop_sync()
     
+    @pytest.mark.asyncio
     async def test_asr_failure_handling(self):
         """测试 1: ASR 识别失败处理"""
         print("\n" + "="*60)
@@ -113,6 +117,7 @@ class TestErrorHandling:
         finally:
             await self.teardown()
     
+    @pytest.mark.asyncio
     async def test_tts_failure_handling(self):
         """测试 2: TTS 播放失败处理"""
         print("\n" + "="*60)
@@ -187,6 +192,7 @@ class TestErrorHandling:
         finally:
             await self.teardown()
     
+    @pytest.mark.asyncio
     async def test_llm_failure_handling(self):
         """测试 3: LLM 生成失败处理"""
         print("\n" + "="*60)
@@ -248,6 +254,7 @@ class TestErrorHandling:
         finally:
             await self.teardown()
     
+    @pytest.mark.asyncio
     async def test_interrupt_during_error(self):
         """测试 4: 错误期间的打断处理"""
         print("\n" + "="*60)
@@ -328,6 +335,7 @@ class TestErrorHandling:
         finally:
             await self.teardown()
     
+    @pytest.mark.asyncio
     async def test_graceful_shutdown(self):
         """测试 5: 优雅关闭"""
         print("\n" + "="*60)

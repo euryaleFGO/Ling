@@ -2,16 +2,16 @@
 
 import json
 import os
+from pathlib import Path
 from typing import Any, Dict, List
 
 from .base_check import CheckResult, HealthCheck
 
-_PROJECT_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
-)
+# 使用 Path 对象更可靠地计算项目根目录
+_PROJECT_ROOT = Path(__file__).parent.parent.parent.parent.parent
 
 _DEFAULT_CONFIGS: List[str] = [
-    os.path.join(_PROJECT_ROOT, "config", "interrupt_config.json"),
+    str(_PROJECT_ROOT / "config" / "interrupt_config.json"),
 ]
 
 

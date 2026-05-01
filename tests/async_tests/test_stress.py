@@ -15,9 +15,12 @@ import os
 from typing import List, Dict, Any
 from unittest.mock import Mock, AsyncMock
 import sys
+import pytest
 
-# 添加项目根目录到路径
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+# 添加项目根目录和 src 目录到路径
+_project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+sys.path.insert(0, _project_root)
+sys.path.insert(0, os.path.join(_project_root, 'src'))
 
 from src.core.conversation_manager_async import (
     AsyncConversationManager,
@@ -28,12 +31,12 @@ from src.core.conversation_manager_async import (
 
 class TestStress:
     """压力测试"""
-    
-    def __init__(self):
+
+    def setup_method(self):
         self.test_results: List[Dict[str, Any]] = []
         self.manager: AsyncConversationManager = None
         self.process = psutil.Process(os.getpid())
-        
+
     async def setup(self):
         """设置测试环境"""
         # 创建配置
@@ -100,6 +103,7 @@ class TestStress:
         """获取当前 CPU 使用率"""
         return self.process.cpu_percent(interval=0.1)
     
+    @pytest.mark.asyncio
     async def test_continuous_interrupts(self):
         """测试 1: 连续打断测试"""
         print("\n" + "="*60)
@@ -176,6 +180,7 @@ class TestStress:
                 "error": str(e),
             })
     
+    @pytest.mark.asyncio
     async def test_high_frequency_conversations(self):
         """测试 2: 高频对话测试"""
         print("\n" + "="*60)
@@ -238,6 +243,7 @@ class TestStress:
                 "error": str(e),
             })
     
+    @pytest.mark.asyncio
     async def test_resource_usage(self):
         """测试 3: 资源占用测试"""
         print("\n" + "="*60)
@@ -300,6 +306,7 @@ class TestStress:
                 "error": str(e),
             })
     
+    @pytest.mark.asyncio
     async def test_long_running_stability(self):
         """测试 4: 长时间运行稳定性"""
         print("\n" + "="*60)

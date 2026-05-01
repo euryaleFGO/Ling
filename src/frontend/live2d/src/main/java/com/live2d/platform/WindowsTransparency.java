@@ -16,6 +16,8 @@ public class WindowsTransparency {
     public interface User32Ex extends User32 {
         User32Ex INSTANCE = Native.load("user32", User32Ex.class, W32APIOptions.DEFAULT_OPTIONS);
         boolean SetLayeredWindowAttributes(WinDef.HWND hwnd, int crKey, byte bAlpha, int dwFlags);
+        boolean GetCursorPos(WinDef.POINT point);
+        boolean ScreenToClient(WinDef.HWND hwnd, WinDef.POINT point);
     }
     
     public interface Dwmapi extends com.sun.jna.Library {
@@ -50,6 +52,7 @@ public class WindowsTransparency {
     
     private static final int GWL_EXSTYLE = -20;
     private static final int WS_EX_LAYERED = 0x00080000;
+    private static final int WS_EX_TRANSPARENT = 0x00000020;
     private static final int LWA_ALPHA = 0x00000002;
     private static final int DWM_BB_ENABLE = 0x00000001;
     
@@ -107,10 +110,41 @@ public class WindowsTransparency {
             
             System.out.println("✅ Windows 透明窗口配置完成！");
             return true;
-            
+
         } catch (Exception e) {
             System.err.println("❌ 启用透明窗口失败: " + e.getMessage());
             return false;
         }
+    }
+
+    /**
+     * 启用点击穿透（透明区域鼠标事件传到后面窗口）
+     */
+    public static void enableClickThrough(long hwndPointer) {
+        WinDef.HWND hwnd = new WinDef.HWND(Pointer.createConstant(hwndPointer));
+        int exStyle = User32.INSTANCE.GetWindowLong(hwnd, GWL_EXSTYLE);
+        User32.INSTANCE.SetWindowLong(hwnd, GWL_EXSTYLE, exStyle | WS_EX_TRANSPARENT);
+    }
+
+    /**
+     * 禁用点击穿透（恢复窗口交互）
+     */
+    public static void disableClickThrough(long hwndPointer) {
+        WinDef.HWND hwnd = new WinDef.HWND(Pointer.createConstant(hwndPointer));
+        int exStyle = User32.INSTANCE.GetWindowLong(hwnd, GWL_EXSTYLE);
+        User32.INSTANCE.SetWindowLong(hwnd, GWL_EXSTYLE, exStyle & ~WS_EX_TRANSPARENT);
+    }
+
+    /**
+     * 获取鼠标相对于窗口客户区的坐标（穿透模式下也能用）
+     * @return [x, y]，获取失败返回 null
+     */
+    public static int[] getCursorPosRelativeToWindow(long hwndPointer) {
+        WinDef.HWND hwnd = new WinDef.HWND(Pointer.createConstant(hwndPointer));
+        WinDef.POINT point = new WinDef.POINT();
+        if (User32Ex.INSTANCE.GetCursorPos(point) && User32Ex.INSTANCE.ScreenToClient(hwnd, point)) {
+            return new int[]{point.x, point.y};
+        }
+        return null;
     }
 }

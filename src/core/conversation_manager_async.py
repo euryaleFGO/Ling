@@ -267,6 +267,9 @@ class AsyncConversationManager:
         
         # TTS 缓存
         self._tts_cache: Optional[TTSCache] = None
+
+        # 文字输入队列（由 tray 对话框 / message_server 投递）
+        self._user_text_queue: asyncio.Queue | None = None
     
     # ============================================================
     #  初始化方法（从同步版本迁移）
@@ -949,6 +952,13 @@ class AsyncConversationManager:
     
     async def _listen_and_recognize_async(self) -> Optional[str]:
         """异步监听并识别语音"""
+        # 文字输入队列模式（tray 对话框 / message_server 投递）
+        if self._user_text_queue is not None:
+            try:
+                return await asyncio.wait_for(self._user_text_queue.get(), timeout=0.5)
+            except asyncio.TimeoutError:
+                return None
+
         if self._asr:
             try:
                 # 使用 asyncio.to_thread 包装同步 ASR
@@ -1045,6 +1055,14 @@ class AsyncConversationManager:
             return text if text else None
         except EOFError:
             return None
+
+    def submit_user_text(self, text: str):
+        """从任意线程投递用户文字到对话循环（线程安全）"""
+        if self._user_text_queue is not None:
+            try:
+                self._user_text_queue.put_nowait(text)
+            except Exception:
+                pass
     
     @staticmethod
     def _merge_streaming_pair(base: str, incoming: str) -> str:
@@ -1157,6 +1175,11 @@ class AsyncConversationManager:
         """异步主循环"""
         log.info("\n异步对话系统已启动\n")
         self._running = True
+
+        # 文字输入模式：创建队列供外部投递
+        if self.config.use_text_input:
+            self._user_text_queue = asyncio.Queue()
+            log.info("[文字输入] 队列已创建，等待外部投递...")
         
         while self._running:
             try:
@@ -1260,6 +1283,7 @@ class AsyncConversationManager:
     def stop_sync(self):
         """停止对话（同步版本，用于从非异步上下文调用）"""
         self._running = False
+        self._user_text_queue = None
         
         # 停止音频设备
         if self._audio_output:

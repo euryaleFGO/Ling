@@ -4,6 +4,7 @@ import com.live2d.core.Core;
 import com.live2d.core.CubismCore;
 import com.live2d.model.Model;
 import com.live2d.platform.WindowsTransparency;
+import com.sun.jna.platform.win32.User32;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.glfw.GLFWErrorCallback;
 import org.lwjgl.glfw.GLFWVidMode;
@@ -85,7 +86,12 @@ public class Main {
     
     private int frameCount = 0;
     private long lastFpsTime = 0;
-    
+
+    // 点击穿透相关
+    private long hwnd;  // Win32 窗口句柄
+    private boolean clickThrough = true;  // 默认穿透
+    private boolean ctrlWasPressed = false;
+
     // 气泡框相关
     private SpeechBubble speechBubble;
 
@@ -96,6 +102,8 @@ public class Main {
     private ExpressionController expressionController;
 
     private double lastLoopTime = 0;
+    private double lastGlobalMouseX = -1;
+    private double lastGlobalMouseY = -1;
 
     // 用户不交互时自动播放 Idle 动作：
     // 定义「事件」：对话状态变化为非 idle、收到 LLM/用户触发的动作指令（motion）
@@ -190,9 +198,10 @@ public class Main {
         System.out.println("[OK] GLFW window created");
         
         try {
-            long hwnd = GLFWNativeWin32.glfwGetWin32Window(window);
+            hwnd = GLFWNativeWin32.glfwGetWin32Window(window);
             if (hwnd != 0) {
                 WindowsTransparency.enableTransparency(hwnd);
+                WindowsTransparency.enableClickThrough(hwnd);
             }
         } catch (Exception e) {
             System.err.println("[WARN] Transparency config failed: " + e.getMessage());
@@ -402,9 +411,40 @@ public class Main {
 
                 core.update();
             }
-            
+
+            // Ctrl 键切换点击穿透/交互模式
+            boolean ctrlPressed = (User32.INSTANCE.GetAsyncKeyState(0x11) & 0x8000) != 0;
+            if (ctrlPressed != ctrlWasPressed) {
+                ctrlWasPressed = ctrlPressed;
+                if (hwnd != 0) {
+                    if (ctrlPressed) {
+                        WindowsTransparency.disableClickThrough(hwnd);
+                    } else {
+                        WindowsTransparency.enableClickThrough(hwnd);
+                    }
+                }
+            }
+
+            // 全局鼠标位置（穿透模式下 GLFW 收不到事件，用 Win32 API 获取）
+            if (hwnd != 0) {
+                int[] pos = WindowsTransparency.getCursorPosRelativeToWindow(hwnd);
+                if (pos != null) {
+                    // 只在鼠标实际移动时更新，否则自动眼跳永远不会触发
+                    if (pos[0] != lastGlobalMouseX || pos[1] != lastGlobalMouseY) {
+                        lastGlobalMouseX = pos[0];
+                        lastGlobalMouseY = pos[1];
+                        mouseX = pos[0];
+                        mouseY = pos[1];
+                        lastMouseMoveTime = glfwGetTime();
+                        targetAngleX = ((mouseX / width) - 0.5) * 60.0;
+                        targetAngleY = -((mouseY / height) - 0.5) * 60.0;
+                    }
+                }
+            }
+
             render();
             if (speechBubble != null) {
+                speechBubble.setModelCenterX(offsetX);
                 speechBubble.update();
                 speechBubble.render();
             }

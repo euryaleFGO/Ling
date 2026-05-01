@@ -23,7 +23,7 @@ import json
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional, Set
+from typing import Any, Callable, Dict, Optional, Set
 
 # 确保日志立即输出
 if hasattr(sys.stdout, "reconfigure"):
@@ -66,6 +66,7 @@ class WebSocketServer:
         self._thread: Optional[threading.Thread] = None
         self._stop_event: Optional[asyncio.Event] = None
         self._ready = threading.Event()
+        self._user_text_handler: Optional[Callable[[str], None]] = None
 
     # ---------- 连接处理 ----------
     async def _handler(self, websocket):
@@ -75,8 +76,19 @@ class WebSocketServer:
         log.debug(f"[MessageServer] 客户端已连接: {addr} (当前 {len(self.clients)} 个)")
         try:
             async for message in websocket:
-                # 将客户端发来的消息转发给所有 *其他* 客户端（中继模式）
-                # 这使得测试脚本可以作为客户端连入并向 Java 前端发送指令
+                # 拦截 user_text 类型：交给 handler，不中继
+                if self._user_text_handler:
+                    try:
+                        data = json.loads(message)
+                        if data.get("type") == "user_text":
+                            text = (data.get("text") or "").strip()
+                            if text:
+                                self._user_text_handler(text)
+                            continue
+                    except (json.JSONDecodeError, AttributeError):
+                        pass
+
+                # 其他类型：转发给所有 *其他* 客户端（中继模式）
                 for other in self.clients.copy():
                     if other is not websocket:
                         try:
@@ -102,6 +114,15 @@ class WebSocketServer:
             except Exception:
                 disconnected.add(client)
         self.clients -= disconnected
+
+    # ---------- user_text handler ----------
+    def set_user_text_handler(self, handler: Callable[[str], None]):
+        """注册 user_text 处理器（由对话管理器调用）"""
+        self._user_text_handler = handler
+
+    def clear_user_text_handler(self):
+        """注销 user_text 处理器"""
+        self._user_text_handler = None
 
     # ---------- 线程安全的发送接口 ----------
     def send(self, data: Dict[str, Any]):

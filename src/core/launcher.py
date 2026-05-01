@@ -6,8 +6,9 @@ import platform
 import shutil
 import threading
 from pathlib import Path
-from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
+from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QDialog, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton, QLabel
 from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtCore import Qt
 
 # Add project root to path
 project_root = Path(__file__).parent.parent.parent
@@ -28,6 +29,17 @@ class Launcher:
         self.debug_mode = debug_mode
         self.enable_conversation = enable_conversation
         self.text_only = text_only  # 文字输入模式（不使用麦克风）
+
+        # 从配置文件读取文字输入模式（CLI 参数优先）
+        if not text_only:
+            try:
+                from core.config_manager import get_config_manager
+                cfg = get_config_manager().config
+                if cfg.general.use_text_input:
+                    self.text_only = True
+                    log.info("[配置] 从配置文件启用文字输入模式")
+            except Exception:
+                pass
         self.asr_device = asr_device
         
         # 设置全局日志级别
@@ -255,7 +267,12 @@ class Launcher:
         self.action_pause.triggered.connect(self.toggle_conversation)
         self.action_pause.setCheckable(True)
         menu.addAction(self.action_pause)
-        
+
+        # 文字输入
+        self.action_text_input = QAction("文字输入", self.app)
+        self.action_text_input.triggered.connect(self.show_text_input_dialog)
+        menu.addAction(self.action_text_input)
+
         menu.addSeparator()
         
         # Open Settings
@@ -301,7 +318,13 @@ class Launcher:
                 )
                 
                 self._conversation_manager = AsyncConversationManager(config)
-                
+
+                # 注册 user_text handler（WebSocket 来源的文字输入）
+                if self.text_only and self._message_server:
+                    self._message_server.set_user_text_handler(
+                        self._conversation_manager.submit_user_text
+                    )
+
                 # 情绪 → Live2D 动作映射（Agent 根据 LLM 情绪自主触发）
                 EMOTION_TO_MOTION = {
                     "joy": "Tap@Body",      # 开心 → 挥手/抬手
@@ -411,6 +434,9 @@ class Launcher:
         """停止对话系统"""
         if self._conversation_manager:
             log.debug("正在停止异步对话系统...")
+            # 注销 user_text handler
+            if self._message_server:
+                self._message_server.clear_user_text_handler()
             # 异步版本使用 stop_sync 方法（同步版本）
             if hasattr(self._conversation_manager, 'stop_sync'):
                 self._conversation_manager.stop_sync()
@@ -422,6 +448,15 @@ class Launcher:
         self.main_window.show()
         self.main_window.raise_()
         self.main_window.activateWindow()
+
+    def show_text_input_dialog(self):
+        """显示文字输入对话框"""
+        if self._conversation_manager is None:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(None, "提示", "对话系统未启动，请先启动对话系统。")
+            return
+        dlg = TextInputDialog(self._conversation_manager, parent=None)
+        dlg.show()
         
     def start_live2d(self):
         project_root = Path(__file__).parent.parent.parent
@@ -811,6 +846,117 @@ class Launcher:
         
     def run(self):
         sys.exit(self.app.exec())
+
+
+class TextInputDialog(QDialog):
+    """文字输入对话框 — 可拖拽、置顶、Enter 发送"""
+
+    def __init__(self, conversation_manager, parent=None):
+        super().__init__(parent)
+        self._conv = conversation_manager
+        self.setWindowTitle("文字输入")
+        self.setWindowFlags(
+            Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.FramelessWindowHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setMinimumSize(420, 60)
+        self.resize(420, 60)
+
+        # 内容容器（圆角半透明背景）
+        container = QWidget(self)
+        container.setObjectName("container")
+        container.setStyleSheet("""
+            #container {
+                background-color: rgba(30, 30, 30, 220);
+                border-radius: 14px;
+            }
+        """)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(container)
+
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(10)
+
+        self.text_edit = QTextEdit()
+        self.text_edit.setPlaceholderText("输入文字，Enter 发送，Shift+Enter 换行")
+        self.text_edit.setMaximumHeight(40)
+        self.text_edit.setStyleSheet("""
+            QTextEdit {
+                background: transparent;
+                color: #e0e0e0;
+                border: none;
+                font-size: 14px;
+                selection-background-color: #43a047;
+            }
+        """)
+        self.text_edit.installEventFilter(self)
+        layout.addWidget(self.text_edit, 1)
+
+        send_btn = QPushButton("发送")
+        send_btn.setFixedSize(60, 34)
+        send_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                            stop:0 #4caf50, stop:1 #43a047);
+                color: white; border: none; border-radius: 8px;
+                font-size: 13px; font-weight: bold;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                            stop:0 #66bb6a, stop:1 #4caf50);
+            }
+        """)
+        send_btn.clicked.connect(self._send)
+        layout.addWidget(send_btn)
+
+        # 初始位置：屏幕底部居中
+        screen = self.screen()
+        if screen:
+            geo = screen.availableGeometry()
+            self.move(geo.width() // 2 - 210, geo.height() - 120)
+
+        # 拖拽支持
+        self._drag_pos = None
+
+    def eventFilter(self, obj, event):
+        if obj is self.text_edit and event.type() == event.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                    return False  # Shift+Enter 换行
+                self._send()
+                return True
+        return super().eventFilter(obj, event)
+
+    def _send(self):
+        text = self.text_edit.toPlainText().strip()
+        if not text:
+            return
+        if self._conv:
+            self._conv.submit_user_text(text)
+        self.text_edit.clear()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_pos is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pos = None
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.close()
+        else:
+            super().keyPressEvent(event)
 
 if __name__ == "__main__":
     # 检查是否启用调试模式（通过命令行参数 --debug 或 -d）

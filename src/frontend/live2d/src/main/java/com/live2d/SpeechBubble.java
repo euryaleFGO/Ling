@@ -30,31 +30,42 @@ import static org.lwjgl.opengl.GL33.*;
 import static org.lwjgl.stb.STBTruetype.*;
 
 /**
- * 气泡框组件
- * 用于显示 LLM 流式消息
+ * 新闻播报风格字幕组件
+ * 底部居中横条，流式打字效果，跟随模型位置
  */
 public class SpeechBubble {
     private StringBuilder messageText = new StringBuilder();
     private AtomicReference<String> currentMessage = new AtomicReference<>("");
-    private AtomicReference<String> pendingTextUpdate = new AtomicReference<>(null);  // 待更新的文本
+    private AtomicReference<String> pendingTextUpdate = new AtomicReference<>(null);
     private float alpha = 0.0f;
-    private long lastMessageTime = 0;  // 初始化为0，表示还没有收到过消息
-    private long lastTextureUpdateTime = 0;  // 上次更新纹理的时间
-    
+    private long lastMessageTime = 0;
+    private long lastTextureUpdateTime = 0;
+
+    // 流式打字效果
+    private int displayedCharCount = 0;   // 当前已显示的字符数
+    private int totalCharCount = 0;       // 完整文本总字符数
+    private String fullPendingText = "";   // 完整待显示文本
+    private static final int CHARS_PER_FRAME = 3;  // 每帧显示字符数
+
     private static final long MESSAGE_TIMEOUT_MS = 10000; // 10秒
     private static final float FADE_SPEED = 0.05f;
-    // 维持“老版本固定矩形”的稳定渲染模型，只做可读性/排版优化
-    private static final int BUBBLE_WIDTH = 520;
-    private static final int BUBBLE_MIN_HEIGHT = 140;
-    private static final int BUBBLE_PADDING = 16;
-    private static final int BUBBLE_X = 50;
-    private static final int BUBBLE_Y = 50;
-    private static final int BUBBLE_BOTTOM_MARGIN = 80; // 距窗口底部保留边距（防止气泡盖满屏）
-    private static final int TEXT_FONT_SIZE = 24;
-    private static final int TEXT_BITMAP_PADDING = 6; // AWT 文本位图留白，避免抗锯齿/边缘裁切
 
-    // 气泡高度：随文本行数自适应（宽度仍保持固定，稳定）
-    private int computedBubbleHeight = BUBBLE_MIN_HEIGHT;
+    // 新闻播报底条样式
+    private static final int SUBTITLE_BOTTOM_MARGIN = 20;  // 距底部边距
+    private static final float SUBTITLE_WIDTH_RATIO = 0.75f; // 占窗口宽度比例
+    private static final int SUBTITLE_PADDING_H = 24;       // 水平内边距
+    private static final int SUBTITLE_PADDING_V = 24;       // 垂直内边距（防裁切）
+    private static final int TEXT_FONT_SIZE = 36;            // 花字大字号
+    private static final int TEXT_BITMAP_PADDING = 12;       // 更大留白给发光效果
+
+    // 模型水平中心位置（由 Main.java 传入）
+    private float modelCenterX = 0.0f;
+
+    // 计算后的字幕区域
+    private int subtitleBarX;
+    private int subtitleBarY;
+    private int subtitleBarWidth;
+    private int subtitleBarHeight = 60;
     
     private OkHttpClient httpClient;
     private ScheduledExecutorService scheduler;
@@ -94,19 +105,27 @@ public class SpeechBubble {
     private static final String BUBBLE_VERTEX_SHADER = """
         #version 330 core
         layout (location = 0) in vec2 position;
+        layout (location = 1) in vec4 vertColor;
+        out vec4 vColor;
         uniform vec2 windowSize;
         void main() {
             vec2 normalizedPos = (position / windowSize) * 2.0 - 1.0;
             gl_Position = vec4(normalizedPos.x, -normalizedPos.y, 0.0, 1.0);
+            vColor = vertColor;
         }
         """;
-    
+
     private static final String BUBBLE_FRAGMENT_SHADER = """
         #version 330 core
+        in vec4 vColor;
         out vec4 FragColor;
         uniform vec4 color;
+        uniform int useVertexColor;
         void main() {
-            FragColor = color;
+            if (useVertexColor != 0)
+                FragColor = vColor;
+            else
+                FragColor = color;
         }
         """;
     
@@ -130,20 +149,26 @@ public class SpeechBubble {
         uniform sampler2D textTexture;
         uniform vec4 textColor;
         void main() {
-            float alpha = texture(textTexture, TexCoord).r;
-            FragColor = vec4(textColor.rgb, textColor.a * alpha);
+            vec4 texColor = texture(textTexture, TexCoord);
+            FragColor = vec4(texColor.rgb, texColor.a * textColor.a);
         }
         """;
     
     public SpeechBubble(int windowWidth, int windowHeight) {
         this.windowWidth = windowWidth;
         this.windowHeight = windowHeight;
+        this.modelCenterX = windowWidth / 2.0f;
         this.httpClient = new OkHttpClient.Builder()
                 .retryOnConnectionFailure(true)
                 .build();
         this.scheduler = Executors.newScheduledThreadPool(1);
         initBubbleRenderer();
         startWebSocketClient();
+    }
+
+    /** 设置模型水平中心位置，字幕跟随 */
+    public void setModelCenterX(float x) {
+        this.modelCenterX = x;
     }
     
     private void initBubbleRenderer() {
@@ -164,18 +189,21 @@ public class SpeechBubble {
         glDeleteShader(vertexShader);
         glDeleteShader(fragmentShader);
         
-        // 创建 VAO 和 VBO
+        // 创建 VAO 和 VBO（position 2f + color 4f = 6 floats per vertex）
         bubbleVAO = glGenVertexArrays();
         bubbleVBO = glGenBuffers();
-        
+
         glBindVertexArray(bubbleVAO);
         glBindBuffer(GL_ARRAY_BUFFER, bubbleVBO);
 
-        // 先占位，后续通过 updateBubbleGeometry() 动态写入高度
-        glBufferData(GL_ARRAY_BUFFER, 6 * 2 * Float.BYTES, GL_DYNAMIC_DRAW);
-        glVertexAttribPointer(0, 2, GL_FLOAT, false, 2 * Float.BYTES, 0);
+        glBufferData(GL_ARRAY_BUFFER, 6 * 6 * Float.BYTES, GL_DYNAMIC_DRAW);
+        // location 0: position (2 floats)
+        glVertexAttribPointer(0, 2, GL_FLOAT, false, 6 * Float.BYTES, 0);
         glEnableVertexAttribArray(0);
-        
+        // location 1: color (4 floats)
+        glVertexAttribPointer(1, 4, GL_FLOAT, false, 6 * Float.BYTES, 2 * Float.BYTES);
+        glEnableVertexAttribArray(1);
+
         glBindVertexArray(0);
 
         // 初始化一次几何（默认高度）
@@ -214,21 +242,22 @@ public class SpeechBubble {
     
     private void updateTextTexture(String text) {
         if (text == null || text.isEmpty()) {
-            text = " ";  // 至少一个空格，避免纹理为 0
+            text = " ";
         }
-        
+
         // 使用 Java AWT 生成文本图像
         int fontSize = TEXT_FONT_SIZE;
-        Font font = new Font("Microsoft YaHei", Font.PLAIN, fontSize);
-        
-        // 计算文本尺寸
+        Font font = new Font("Microsoft YaHei", Font.BOLD, fontSize);
+
         BufferedImage tempImg = new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
         Graphics2D g2d = tempImg.createGraphics();
         g2d.setFont(font);
         FontMetrics fm = g2d.getFontMetrics();
-        
-        // 文本换行处理（基于真实测宽，支持中文无空格断行，并保留原始换行符）
-        int textAreaMaxWidth = BUBBLE_WIDTH - BUBBLE_PADDING * 2;
+
+        // 计算字幕条宽度（80% 窗口宽度）
+        subtitleBarWidth = (int) (windowWidth * SUBTITLE_WIDTH_RATIO);
+        int textAreaMaxWidth = subtitleBarWidth - SUBTITLE_PADDING_H * 2;
+
         String[] lines = wrapTextByMetrics(text, fm, textAreaMaxWidth);
         int maxWidth = 0;
         for (String line : lines) {
@@ -237,39 +266,81 @@ public class SpeechBubble {
                 maxWidth = width;
             }
         }
-        
+
         int lineHeight = fm.getHeight();
         int totalHeight = lines.length * lineHeight;
-        g2d.dispose();  // 释放临时 Graphics2D 资源
-        
-        // 确保尺寸合理
+        g2d.dispose();
+
         maxWidth = Math.max(maxWidth, 100);
         totalHeight = Math.max(totalHeight, lineHeight);
 
-        // 根据文本高度自适应气泡高度（保留上下 padding，并根据窗口高度动态上限）
-        int neededBubbleHeight = totalHeight + BUBBLE_PADDING * 2;
-        // 最大高度动态取：窗口高度 - 顶部位置 - 底部边距
-        int maxBubbleHeight = Math.max(BUBBLE_MIN_HEIGHT, windowHeight - BUBBLE_Y - BUBBLE_BOTTOM_MARGIN);
-        computedBubbleHeight = Math.max(BUBBLE_MIN_HEIGHT, Math.min(maxBubbleHeight, neededBubbleHeight));
+        // 计算字幕条位置：底部居中，跟随模型 X
+        subtitleBarHeight = totalHeight + SUBTITLE_PADDING_V * 2;
+        subtitleBarX = (int) (modelCenterX - subtitleBarWidth / 2.0f);
+        // 限制不超出窗口
+        subtitleBarX = Math.max(10, Math.min(windowWidth - subtitleBarWidth - 10, subtitleBarX));
+        subtitleBarY = windowHeight - SUBTITLE_BOTTOM_MARGIN - subtitleBarHeight;
+
         updateBubbleGeometry();
-        
-        // 创建文本图像（加 padding 防止描边/抗锯齿被裁切）
+
+        // 创建文本图像（加 padding 防止发光效果被裁切）
         int pad = TEXT_BITMAP_PADDING;
-        BufferedImage textImage = new BufferedImage(maxWidth + pad * 2, totalHeight + pad * 2, BufferedImage.TYPE_INT_ARGB);
+        int imgW = maxWidth + pad * 2;
+        int imgH = totalHeight + pad * 2;
+        BufferedImage textImage = new BufferedImage(imgW, imgH, BufferedImage.TYPE_INT_ARGB);
         g2d = textImage.createGraphics();
         g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g2d.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        g2d.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
         g2d.setFont(font);
-        g2d.setColor(java.awt.Color.WHITE);
-        
-        // 绘制文本
+
+        java.awt.font.FontRenderContext frc = g2d.getFontRenderContext();
+
+        // 第一遍：黑色描边
         int textY = pad + fm.getAscent();
+        for (String line : lines) {
+            if (line.isEmpty()) { textY += lineHeight; continue; }
+            java.awt.font.TextLayout tl = new java.awt.font.TextLayout(line, font, frc);
+            java.awt.Shape outline = tl.getOutline(null);
+            java.awt.geom.AffineTransform tx = java.awt.geom.AffineTransform.getTranslateInstance(pad, textY);
+            java.awt.Shape shiftedOutline = tx.createTransformedShape(outline);
+            g2d.setColor(new java.awt.Color(0, 0, 0, 220));
+            g2d.setStroke(new java.awt.BasicStroke(3f, java.awt.BasicStroke.CAP_ROUND, java.awt.BasicStroke.JOIN_ROUND));
+            g2d.draw(shiftedOutline);
+            textY += lineHeight;
+        }
+
+        // 第二遍：白色文字
+        g2d.setColor(java.awt.Color.WHITE);
+        textY = pad + fm.getAscent();
         for (String line : lines) {
             g2d.drawString(line, pad, textY);
             textY += lineHeight;
         }
-        
         g2d.dispose();
+
+        // 第三遍：像素级渐变（白色文字叠加从上到下的蓝色 tint）
+        int[] pixels = textImage.getRGB(0, 0, imgW, imgH, null, 0, imgW);
+        for (int py = 0; py < imgH; py++) {
+            float t = (float) py / imgH;
+            for (int px = 0; px < imgW; px++) {
+                int idx = py * imgW + px;
+                int argb = pixels[idx];
+                int a = (argb >> 24) & 0xFF;
+                if (a > 0) {
+                    int r = (argb >> 16) & 0xFF;
+                    int g = (argb >> 8) & 0xFF;
+                    int b = argb & 0xFF;
+                    // 只对白色像素做渐变，黑色描边不动
+                    if (r > 200 && g > 200 && b > 200) {
+                        r = (int) (r * (1 - t * 0.55f));
+                        g = (int) (g * (1 - t * 0.15f));
+                        pixels[idx] = (a << 24) | (r << 16) | (g << 8) | b;
+                    }
+                }
+            }
+        }
+        textImage.setRGB(0, 0, imgW, imgH, pixels, 0, imgW);
         
         // 转换为 OpenGL 纹理
         textTextureWidth = textImage.getWidth();
@@ -280,10 +351,12 @@ public class SpeechBubble {
             for (int x = 0; x < textTextureWidth; x++) {
                 int pixel = textImage.getRGB(x, y);
                 int a = (pixel >> 24) & 0xFF;
-                // 使用 alpha 通道存储灰度值（白色文本）
-                buffer.put((byte) a);
-                buffer.put((byte) a);
-                buffer.put((byte) a);
+                int r = (pixel >> 16) & 0xFF;
+                int g = (pixel >> 8) & 0xFF;
+                int b = pixel & 0xFF;
+                buffer.put((byte) r);
+                buffer.put((byte) g);
+                buffer.put((byte) b);
                 buffer.put((byte) a);
             }
         }
@@ -301,12 +374,10 @@ public class SpeechBubble {
         if (textShaderProgram == 0 || textTexture == 0) {
             return;
         }
-        
-        // 如果纹理尺寸为0，说明还没有文本，不渲染
         if (textTextureWidth <= 0 || textTextureHeight <= 0) {
             return;
         }
-        
+
         // 保存当前状态
         int[] currentProgram = new int[1];
         glGetIntegerv(GL_CURRENT_PROGRAM, currentProgram);
@@ -317,37 +388,25 @@ public class SpeechBubble {
         boolean scissorEnabled = glIsEnabled(GL_SCISSOR_TEST);
         int[] scissorBox = new int[4];
         glGetIntegerv(GL_SCISSOR_BOX, scissorBox);
-        
-        // 使用文本着色器
+
         glUseProgram(textShaderProgram);
-        
-        // 设置窗口大小
+
         int windowSizeLoc = glGetUniformLocation(textShaderProgram, "windowSize");
         if (windowSizeLoc >= 0) {
             glUniform2f(windowSizeLoc, windowWidth, windowHeight);
         }
-        
-        // 设置文本颜色
+
         int textColorLoc = glGetUniformLocation(textShaderProgram, "textColor");
         if (textColorLoc >= 0) {
             glUniform4f(textColorLoc, 1.0f, 1.0f, 1.0f, alpha);
         }
 
-        // 裁剪：保证文字不会溢出气泡框（GL 坐标系原点在左下，需要换算）
-        glEnable(GL_SCISSOR_TEST);
-        int scX = BUBBLE_X + BUBBLE_PADDING;
-        int scY = windowHeight - (BUBBLE_Y + computedBubbleHeight - BUBBLE_PADDING);
-        int scW = Math.max(0, BUBBLE_WIDTH - BUBBLE_PADDING * 2);
-        int scH = Math.max(0, computedBubbleHeight - BUBBLE_PADDING * 2);
-        glScissor(scX, scY, scW, scH);
-        
-        // 计算文本位置（在气泡框内）
-        float textX = BUBBLE_X + BUBBLE_PADDING;
-        float textY = BUBBLE_Y + BUBBLE_PADDING;
+        // 文本居中于字幕条
+        float textX = subtitleBarX + (subtitleBarWidth - textTextureWidth) / 2.0f;
+        float textY = subtitleBarY + SUBTITLE_PADDING_V;
         float textW = textTextureWidth;
         float textH = textTextureHeight;
-        
-        // 创建文本矩形顶点
+
         float[] vertices = {
             textX, textY,
             textX + textW, textY,
@@ -356,7 +415,7 @@ public class SpeechBubble {
             textX + textW, textY + textH,
             textX, textY + textH
         };
-        
+
         float[] texCoords = {
             0.0f, 0.0f,
             1.0f, 0.0f,
@@ -365,20 +424,17 @@ public class SpeechBubble {
             1.0f, 1.0f,
             0.0f, 1.0f
         };
-        
-        // 绑定纹理
+
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, textTexture);
         int textureLoc = glGetUniformLocation(textShaderProgram, "textTexture");
         if (textureLoc >= 0) {
             glUniform1i(textureLoc, 0);
         }
-        
-        // 创建并绑定 VAO
+
         glBindVertexArray(textVAO);
         glBindBuffer(GL_ARRAY_BUFFER, textVBO);
-        
-        // 上传顶点数据（位置 + 纹理坐标）
+
         FloatBuffer vertexBuffer = BufferUtils.createFloatBuffer(vertices.length + texCoords.length);
         for (int i = 0; i < 6; i++) {
             vertexBuffer.put(vertices[i * 2]);
@@ -387,23 +443,15 @@ public class SpeechBubble {
             vertexBuffer.put(texCoords[i * 2 + 1]);
         }
         vertexBuffer.flip();
-        
+
         glBufferData(GL_ARRAY_BUFFER, vertexBuffer, GL_DYNAMIC_DRAW);
         glVertexAttribPointer(0, 2, GL_FLOAT, false, 4 * Float.BYTES, 0);
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(1, 2, GL_FLOAT, false, 4 * Float.BYTES, 2 * Float.BYTES);
         glEnableVertexAttribArray(1);
-        
-        // 绘制
+
         glDrawArrays(GL_TRIANGLES, 0, 6);
 
-        // 恢复 scissor 状态
-        if (!scissorEnabled) {
-            glDisable(GL_SCISSOR_TEST);
-        }
-        glScissor(scissorBox[0], scissorBox[1], scissorBox[2], scissorBox[3]);
-        
-        // 恢复状态
         glBindTexture(GL_TEXTURE_2D, currentTexture[0]);
         glBindVertexArray(currentVAO[0]);
         glUseProgram(currentProgram[0]);
@@ -411,25 +459,34 @@ public class SpeechBubble {
     
     public void update() {
         long now = System.currentTimeMillis();
-        
-        // 检查是否有待更新的文本（必须在主线程中更新纹理）
-        // 现在是一次性完整文本，直接更新即可
+
+        // 检查是否有新消息到达
         String pendingText = pendingTextUpdate.getAndSet(null);
         if (pendingText != null) {
-            updateTextTexture(pendingText);
+            fullPendingText = pendingText;
+            totalCharCount = pendingText.length();
+            displayedCharCount = 0;
             lastTextureUpdateTime = now;
         }
-        
-        // 如果10秒没有新消息，开始淡出
-        // 注意：只有当 lastMessageTime > 0 时才检查超时（表示曾经收到过消息）
+
+        // 流式打字效果：每帧显示 CHARS_PER_FRAME 个字符
+        if (displayedCharCount < totalCharCount) {
+            displayedCharCount = Math.min(displayedCharCount + CHARS_PER_FRAME, totalCharCount);
+            String visibleText = fullPendingText.substring(0, displayedCharCount);
+            updateTextTexture(visibleText);
+        }
+
+        // 10秒无新消息后淡出
         if (lastMessageTime > 0 && now - lastMessageTime > MESSAGE_TIMEOUT_MS && alpha > 0.0f) {
             alpha = Math.max(0.0f, alpha - FADE_SPEED);
             if (alpha <= 0.0f) {
-                // 完全消失后清空消息
                 synchronized (messageText) {
                     messageText.setLength(0);
                     currentMessage.set("");
-                    lastMessageTime = 0;  // 重置，表示没有活跃消息
+                    fullPendingText = "";
+                    displayedCharCount = 0;
+                    totalCharCount = 0;
+                    lastMessageTime = 0;
                 }
             }
         }
@@ -439,8 +496,7 @@ public class SpeechBubble {
         if (alpha <= 0.0f || bubbleShaderProgram == 0) {
             return;
         }
-        
-        // 优先使用待更新的文本（最新的），如果没有则使用当前消息
+
         String text = pendingTextUpdate.get();
         if (text == null || text.isEmpty()) {
             text = currentMessage.get();
@@ -448,59 +504,70 @@ public class SpeechBubble {
         if (text == null || text.isEmpty()) {
             return;
         }
-        
-        // 注意：OpenGL 3.3 Core Profile 不支持 glPushAttrib/glPopAttrib
-        // 需要手动保存和恢复状态
-        
-        // 保存当前着色器程序
+
+        // 保存当前状态（必须保存 glBlendFuncSeparate 的 4 个因子）
         int[] currentProgram = new int[1];
         glGetIntegerv(GL_CURRENT_PROGRAM, currentProgram);
-        
-        // 保存当前绑定的 VAO
         int[] currentVAO = new int[1];
         glGetIntegerv(GL_VERTEX_ARRAY_BINDING, currentVAO);
-        
-        // 保存当前渲染状态
         boolean depthTestEnabled = glIsEnabled(GL_DEPTH_TEST);
         boolean blendEnabled = glIsEnabled(GL_BLEND);
-        int[] blendSrc = new int[1];
-        int[] blendDst = new int[1];
-        glGetIntegerv(GL_BLEND_SRC, blendSrc);
-        glGetIntegerv(GL_BLEND_DST, blendDst);
-        
-        // 设置渲染状态
+        int[] blendSrcRGB = new int[1], blendDstRGB = new int[1];
+        int[] blendSrcAlpha = new int[1], blendDstAlpha = new int[1];
+        glGetIntegerv(GL_BLEND_SRC_RGB, blendSrcRGB);
+        glGetIntegerv(GL_BLEND_DST_RGB, blendDstRGB);
+        glGetIntegerv(GL_BLEND_SRC_ALPHA, blendSrcAlpha);
+        glGetIntegerv(GL_BLEND_DST_ALPHA, blendDstAlpha);
+
         glDisable(GL_DEPTH_TEST);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        
-        // 使用气泡框着色器
+
         glUseProgram(bubbleShaderProgram);
-        
-        // 设置窗口大小 uniform
         int windowSizeLoc = glGetUniformLocation(bubbleShaderProgram, "windowSize");
         if (windowSizeLoc >= 0) {
             glUniform2f(windowSizeLoc, windowWidth, windowHeight);
         }
-        
-        // 绘制背景矩形
         int colorLoc = glGetUniformLocation(bubbleShaderProgram, "color");
-        if (colorLoc >= 0) {
-            glUniform4f(colorLoc, 0.15f, 0.15f, 0.2f, alpha * 0.85f);
-        }
-        
+        int useVertColorLoc = glGetUniformLocation(bubbleShaderProgram, "useVertexColor");
+
+        // 1) 绘制渐变背景（使用顶点颜色）
+        if (useVertColorLoc >= 0) glUniform1i(useVertColorLoc, 1);
         glBindVertexArray(bubbleVAO);
         glDrawArrays(GL_TRIANGLES, 0, 6);
-        
-        // 绘制文本（只要有文本就渲染，即使尺寸为0也会在updateTextTexture中处理）
+
+        // 2) 顶部彩色渐变装饰线（蓝→青→白）
+        if (useVertColorLoc >= 0) glUniform1i(useVertColorLoc, 1);
+        float lineY = subtitleBarY + subtitleBarHeight - 2;
+        float lineH = 2;
+        float lx = subtitleBarX;
+        float lw = subtitleBarWidth;
+        float la = alpha * 0.9f;
+        float[] lineData = {
+            lx, lineY,        0.2f, 0.5f, 1.0f, la,
+            lx + lw, lineY,   0.0f, 0.8f, 1.0f, la,
+            lx, lineY + lineH,0.4f, 0.7f, 1.0f, la * 0.6f,
+            lx + lw, lineY,   0.0f, 0.8f, 1.0f, la,
+            lx + lw, lineY + lineH, 0.0f, 1.0f, 1.0f, la * 0.6f,
+            lx, lineY + lineH,0.4f, 0.7f, 1.0f, la * 0.6f,
+        };
+        FloatBuffer lineBuf = BufferUtils.createFloatBuffer(lineData.length);
+        lineBuf.put(lineData).flip();
+        glBindBuffer(GL_ARRAY_BUFFER, bubbleVBO);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, lineBuf);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        // 恢复渐变背景几何
+        updateBubbleGeometry();
+
+        // 绘制文本
         if (textTexture != 0) {
             renderText();
         }
-        
+
         // 恢复状态
         glBindVertexArray(currentVAO[0]);
         glUseProgram(currentProgram[0]);
-        
-        // 恢复渲染状态
         if (depthTestEnabled) {
             glEnable(GL_DEPTH_TEST);
         } else {
@@ -511,7 +578,7 @@ public class SpeechBubble {
         } else {
             glDisable(GL_BLEND);
         }
-        glBlendFunc(blendSrc[0], blendDst[0]);
+        glBlendFuncSeparate(blendSrcRGB[0], blendDstRGB[0], blendSrcAlpha[0], blendDstAlpha[0]);
     }
     
     // ============================================================
@@ -652,6 +719,9 @@ public class SpeechBubble {
         synchronized (messageText) {
             messageText.setLength(0);
             currentMessage.set("");
+            fullPendingText = "";
+            displayedCharCount = 0;
+            totalCharCount = 0;
             alpha = 0.0f;
             lastMessageTime = 0;
         }
@@ -803,22 +873,29 @@ public class SpeechBubble {
     }
 
     private void updateBubbleGeometry() {
-        float x = BUBBLE_X;
-        float y = BUBBLE_Y;
-        float w = BUBBLE_WIDTH;
-        float h = computedBubbleHeight;
+        float x = subtitleBarX;
+        float y = subtitleBarY;
+        float w = subtitleBarWidth;
+        float h = subtitleBarHeight;
 
-        float[] vertices = {
-                x, y,
-                x + w, y,
-                x, y + h,
-                x + w, y,
-                x + w, y + h,
-                x, y + h
+        // 渐变色：底部深色 → 顶部透明
+        float[] bottomColor = {0.02f, 0.02f, 0.06f, 0.85f};  // 底部：深蓝黑，较不透明
+        float[] topColor    = {0.02f, 0.02f, 0.06f, 0.0f};    // 顶部：完全透明
+
+        // 6个顶点：2个三角形组成矩形，每个顶点 (x, y, r, g, b, a)
+        float[] data = {
+            // 三角形1: 左下, 右下, 左上
+            x, y,         bottomColor[0], bottomColor[1], bottomColor[2], bottomColor[3],
+            x + w, y,     bottomColor[0], bottomColor[1], bottomColor[2], bottomColor[3],
+            x, y + h,     topColor[0], topColor[1], topColor[2], topColor[3],
+            // 三角形2: 右下, 右上, 左上
+            x + w, y,     bottomColor[0], bottomColor[1], bottomColor[2], bottomColor[3],
+            x + w, y + h, topColor[0], topColor[1], topColor[2], topColor[3],
+            x, y + h,     topColor[0], topColor[1], topColor[2], topColor[3],
         };
 
-        FloatBuffer vertexBuffer = BufferUtils.createFloatBuffer(vertices.length);
-        vertexBuffer.put(vertices).flip();
+        FloatBuffer vertexBuffer = BufferUtils.createFloatBuffer(data.length);
+        vertexBuffer.put(data).flip();
 
         glBindBuffer(GL_ARRAY_BUFFER, bubbleVBO);
         glBufferSubData(GL_ARRAY_BUFFER, 0, vertexBuffer);

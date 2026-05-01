@@ -93,6 +93,12 @@ class AdvancedConfig:
 
 
 @dataclass
+class GeneralConfig:
+    """通用配置"""
+    use_text_input: bool = False
+
+
+@dataclass
 class SystemConfig:
     """系统配置（根配置）"""
     version: str = "1.0.0"
@@ -104,6 +110,7 @@ class SystemConfig:
     performance: PerformanceConfig = field(default_factory=PerformanceConfig)
     speaker_recognition: SpeakerRecognitionConfig = field(default_factory=SpeakerRecognitionConfig)
     advanced: AdvancedConfig = field(default_factory=AdvancedConfig)
+    general: GeneralConfig = field(default_factory=GeneralConfig)
 
 
 class ConfigManager:
@@ -246,6 +253,13 @@ class ConfigManager:
                 log_performance_metrics=adv_data.get("log_performance_metrics", True),
                 auto_optimize=adv_data.get("auto_optimize", False),
             )
+
+        # 通用配置
+        if "general" in data:
+            gen_data = data["general"]
+            config.general = GeneralConfig(
+                use_text_input=gen_data.get("use_text_input", False),
+            )
         
         return config
     
@@ -351,6 +365,9 @@ class ConfigManager:
                 "enable_debug_logging": self.config.advanced.enable_debug_logging,
                 "log_performance_metrics": self.config.advanced.log_performance_metrics,
                 "auto_optimize": self.config.advanced.auto_optimize,
+            },
+            "general": {
+                "use_text_input": self.config.general.use_text_input,
             },
         }
         
