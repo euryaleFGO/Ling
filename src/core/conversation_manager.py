@@ -22,11 +22,6 @@ from enum import Enum
 
 import numpy as np
 
-# 添加路径
-project_root = Path(__file__).parent.parent.parent
-src_path = project_root / "src"
-sys.path.insert(0, str(src_path))
-
 from core.audio_io import AudioInput, AudioOutput, AudioConfig
 from core.vad import VADConfig, create_vad
 from core.log import log

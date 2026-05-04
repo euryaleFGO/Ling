@@ -81,9 +81,9 @@ class RemoteASRClient:
                 timeout=5
             )
             return resp.status_code == 200
-        except:
+        except Exception:
             return False
-    
+
     def recognize_audio(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
         """
         识别音频（批量模式）

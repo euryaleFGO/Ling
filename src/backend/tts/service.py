@@ -18,14 +18,6 @@ from flask_cors import CORS
 
 # 设置路径
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # .../src/backend/tts
-# 显式加入项目 src 路径，保证可以 import backend.*
-PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "..", "..", ".."))  # .../src
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
-
-# 兼容旧导入：把 tts 目录也加入，方便 from engine import ...
-if BASE_DIR not in sys.path:
-    sys.path.insert(0, BASE_DIR)
 
 # 设置 modelscope 缓存目录
 os.environ.setdefault('MODELSCOPE_CACHE', os.path.expanduser('~/.cache/modelscope'))
@@ -402,9 +394,9 @@ if __name__ == '__main__':
     if sys.stdout.encoding != 'utf-8':
         try:
             sys.stdout.reconfigure(encoding='utf-8')
-        except:
+        except (AttributeError, OSError):
             pass
-    
+
     # 解析命令行参数
     parser = argparse.ArgumentParser(description='TTS 服务')
     parser.add_argument('--host', default='127.0.0.1', help='服务地址 (默认: 127.0.0.1，仅本地访问)')

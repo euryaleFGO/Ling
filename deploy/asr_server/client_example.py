@@ -24,9 +24,9 @@ class ASRClient:
         try:
             resp = self.session.get(f"{self.base_url}/health", timeout=5)
             return resp.status_code == 200
-        except:
+        except Exception:
             return False
-    
+
     def _audio_file_to_base64(self, audio_path: str) -> str:
         """将音频文件转换为 base64"""
         with open(audio_path, 'rb') as f:

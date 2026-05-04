@@ -22,11 +22,6 @@ from pathlib import Path
 import os
 import platform
 
-# 添加 src 目录到路径
-project_root = Path(__file__).parent
-src_path = project_root / "src"
-sys.path.insert(0, str(src_path))
-
 # 加载 .env 文件（必须在最开始加载）
 from dotenv import load_dotenv
 load_dotenv()
@@ -75,9 +70,9 @@ def _ensure_mongodb_for_text_mode():
                 timeout=5
             )
             return "mongod.exe" in result.stdout
-        except:
+        except (subprocess.SubprocessError, OSError):
             return False
-    
+
     if is_mongodb_running():
         print("MongoDB 已在运行")
         return

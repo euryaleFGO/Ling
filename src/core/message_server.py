@@ -22,7 +22,6 @@ import asyncio
 import json
 import sys
 import threading
-from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Set
 
 # 确保日志立即输出
@@ -31,11 +30,6 @@ if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
-
-# 添加项目路径
-project_root = Path(__file__).parent.parent.parent
-src_path = project_root / "src"
-sys.path.insert(0, str(src_path))
 
 from core.log import log
 

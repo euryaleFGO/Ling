@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-配置管理器
+统一配置管理器
 
 功能：
 1. 加载配置文件
 2. 验证配置参数
 3. 提供默认值
 4. 运行时热更新（可选）
+
+配置来源优先级：JSON 文件 > 环境变量 > 默认值
 """
 
 import json
@@ -18,12 +20,31 @@ from dataclasses import dataclass, field
 from core.log import log
 
 
+# ============================================================
+#  子配置 dataclass
+# ============================================================
+
+@dataclass
+class LLMConfig:
+    """LLM 推理配置"""
+    api_key: str = ""
+    base_url: str = ""
+    model: str = ""
+    temperature: float = 0.7
+    max_tokens: int = 2048
+    timeout: int = 120
+
+
 @dataclass
 class ASRConfig:
     """ASR 配置"""
     provider: str = "funasr"
     device: str = "auto"
     stream_profile: str = "balanced"
+    model_dir: str = ""
+    vad_model_dir: str = ""
+    whisper_api_base: str = ""
+    whisper_api_key: str = ""
     hotwords: list = field(default_factory=list)
     hotword_weight: float = 10.0
     enable_model_cache: bool = True
@@ -33,6 +54,9 @@ class ASRConfig:
 @dataclass
 class TTSConfig:
     """TTS 配置"""
+    model_dir: str = ""
+    remote_url: str = ""
+    spk_id: str = "玲"
     enable_cache: bool = True
     cache_size: int = 100
     cache_common_phrases: list = field(default_factory=lambda: [
@@ -40,6 +64,51 @@ class TTSConfig:
     ])
     parallel_synthesis: bool = True
     max_workers: int = 2
+
+
+@dataclass
+class PuncConfig:
+    """标点恢复配置"""
+    enable: bool = True
+    model_id: str = ""
+    device: str = "auto"
+
+
+@dataclass
+class SERConfig:
+    """语音情感识别配置"""
+    enable: bool = True
+    model_id: str = ""
+    device: str = "auto"
+    min_audio_sec: float = 0.8
+
+
+@dataclass
+class SVConfig:
+    """声纹验证配置"""
+    enable: bool = False
+    model_id: str = ""
+    device: str = "auto"
+    threshold: float = 0.38
+    min_audio_sec: float = 0.8
+    enroll_audio: str = ""
+    reject_policy: str = "drop"
+
+
+@dataclass
+class DiarizationConfig:
+    """多说话人识别配置"""
+    enable: bool = False
+    threshold: float = 0.75
+    model_id: str = ""
+    device: str = "auto"
+    min_audio_sec: float = 0.8
+    storage_path: str = ""
+    max_speakers: int = 10
+    timeout_ms: int = 500
+    notify_speaker_change: bool = True
+    allow_concurrent_speakers: bool = False
+    voiceprint_cleanup_days: int = 180
 
 
 @dataclass
@@ -96,15 +165,22 @@ class AdvancedConfig:
 class GeneralConfig:
     """通用配置"""
     use_text_input: bool = False
+    user_id: str = "default_user"
+    auto_listen: bool = True
 
 
 @dataclass
 class SystemConfig:
     """系统配置（根配置）"""
-    version: str = "1.0.0"
-    description: str = "流式打断与性能优化配置"
+    version: str = "2.0.0"
+    description: str = "统一系统配置"
+    llm: LLMConfig = field(default_factory=LLMConfig)
     asr: ASRConfig = field(default_factory=ASRConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
+    punc: PuncConfig = field(default_factory=PuncConfig)
+    ser: SERConfig = field(default_factory=SERConfig)
+    sv: SVConfig = field(default_factory=SVConfig)
+    diarization: DiarizationConfig = field(default_factory=DiarizationConfig)
     interrupt: InterruptConfig = field(default_factory=InterruptConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
     performance: PerformanceConfig = field(default_factory=PerformanceConfig)
@@ -113,51 +189,59 @@ class SystemConfig:
     general: GeneralConfig = field(default_factory=GeneralConfig)
 
 
+# ============================================================
+#  配置解析辅助函数
+# ============================================================
+
+def _parse_sub_config(data: dict, cls, prefix: str = ""):
+    """从 dict 解析子配置，忽略未知字段"""
+    import inspect
+    sig = inspect.signature(cls)
+    kwargs = {}
+    for name, param in sig.parameters.items():
+        if name in data:
+            kwargs[name] = data[name]
+    return cls(**kwargs)
+
+
+# ============================================================
+#  ConfigManager
+# ============================================================
+
 class ConfigManager:
-    """配置管理器"""
-    
+    """统一配置管理器"""
+
     def __init__(self, config_path: Optional[str] = None):
-        """
-        初始化配置管理器
-        
-        Args:
-            config_path: 配置文件路径，默认为 config/interrupt_config.json
-        """
         if config_path is None:
             project_root = Path(__file__).parent.parent.parent
-            config_path = project_root / "config" / "interrupt_config.json"
-        
+            config_path = project_root / "config" / "settings.json"
+            # 兼容旧配置文件名
+            if not Path(config_path).exists():
+                old_path = project_root / "config" / "interrupt_config.json"
+                if old_path.exists():
+                    config_path = old_path
+
         self.config_path = Path(config_path)
         self.config: SystemConfig = SystemConfig()
         self._file_mtime: Optional[float] = None
-    
+
     def load(self) -> SystemConfig:
-        """
-        加载配置文件
-        
-        Returns:
-            SystemConfig: 系统配置对象
-        """
         if not self.config_path.exists():
             log.warn(f"配置文件不存在: {self.config_path}，使用默认配置")
             return self.config
-        
+
         try:
             with open(self.config_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            
-            # 更新文件修改时间
+
             self._file_mtime = self.config_path.stat().st_mtime
-            
-            # 解析配置
             self.config = self._parse_config(data)
-            
-            # 验证配置
+            self._apply_env_overrides()
             self._validate_config()
-            
+
             log.info(f"配置文件加载成功: {self.config_path}")
             return self.config
-            
+
         except json.JSONDecodeError as e:
             log.error(f"配置文件格式错误: {e}")
             log.warn("使用默认配置")
@@ -166,245 +250,275 @@ class ConfigManager:
             log.error(f"加载配置文件失败: {e}")
             log.warn("使用默认配置")
             return self.config
-    
-    def _parse_config(self, data: Dict[str, Any]) -> SystemConfig:
-        """解析配置数据"""
-        config = SystemConfig()
-        
-        # 基本信息
-        config.version = data.get("version", "1.0.0")
-        config.description = data.get("description", "")
-        
-        # ASR 配置
-        if "asr" in data:
-            asr_data = data["asr"]
-            config.asr = ASRConfig(
-                provider=asr_data.get("provider", "funasr"),
-                device=asr_data.get("device", "auto"),
-                stream_profile=asr_data.get("stream_profile", "balanced"),
-                hotwords=asr_data.get("hotwords", []),
-                hotword_weight=asr_data.get("hotword_weight", 10.0),
-                enable_model_cache=asr_data.get("enable_model_cache", True),
-                cache_warmup=asr_data.get("cache_warmup", False),
-            )
-        
-        # TTS 配置
-        if "tts" in data:
-            tts_data = data["tts"]
-            config.tts = TTSConfig(
-                enable_cache=tts_data.get("enable_cache", True),
-                cache_size=tts_data.get("cache_size", 100),
-                cache_common_phrases=tts_data.get("cache_common_phrases", []),
-                parallel_synthesis=tts_data.get("parallel_synthesis", True),
-                max_workers=tts_data.get("max_workers", 2),
-            )
-        
-        # 打断配置
-        if "interrupt" in data:
-            int_data = data["interrupt"]
-            config.interrupt = InterruptConfig(
-                enable_barge_in=int_data.get("enable_barge_in", True),
-                vad_threshold=int_data.get("vad_threshold", 0.5),
-                min_speech_ms=int_data.get("min_speech_ms", 300),
-                response_time_ms=int_data.get("response_time_ms", 200),
-                context_mode=int_data.get("context_mode", "reset"),
-                feedback_enabled=int_data.get("feedback_enabled", True),
-                sound_enabled=int_data.get("sound_enabled", False),
-            )
-        
-        # 音频配置
-        if "audio" in data:
-            audio_data = data["audio"]
-            config.audio = AudioConfig(
-                sample_rate=audio_data.get("sample_rate", 16000),
-                silence_threshold=audio_data.get("silence_threshold", 0.01),
-                silence_duration=audio_data.get("silence_duration", 0.6),
-                vad_backend=audio_data.get("vad_backend", "rms"),
-                vad_preset=audio_data.get("vad_preset", "balanced"),
-                use_vad=audio_data.get("use_vad", True),
-            )
-        
-        # 性能监控配置
-        if "performance" in data:
-            perf_data = data["performance"]
-            config.performance = PerformanceConfig(
-                enable_monitoring=perf_data.get("enable_monitoring", True),
-                max_history_size=perf_data.get("max_history_size", 100),
-                export_interval_seconds=perf_data.get("export_interval_seconds", 300),
-                export_format=perf_data.get("export_format", "json"),
-            )
-        
-        # 声纹识别配置
-        if "speaker_recognition" in data:
-            sr_data = data["speaker_recognition"]
-            config.speaker_recognition = SpeakerRecognitionConfig(
-                enable=sr_data.get("enable", False),
-                async_recognition=sr_data.get("async_recognition", True),
-                timeout_ms=sr_data.get("timeout_ms", 500),
-                enable_cache=sr_data.get("enable_cache", True),
-                cache_size=sr_data.get("cache_size", 100),
-            )
-        
-        # 高级配置
-        if "advanced" in data:
-            adv_data = data["advanced"]
-            config.advanced = AdvancedConfig(
-                enable_debug_logging=adv_data.get("enable_debug_logging", False),
-                log_performance_metrics=adv_data.get("log_performance_metrics", True),
-                auto_optimize=adv_data.get("auto_optimize", False),
-            )
 
-        # 通用配置
+    def _apply_env_overrides(self):
+        """环境变量覆盖（仅在 JSON 中未设置时生效）"""
+        c = self.config
+
+        # LLM
+        if not c.llm.api_key:
+            c.llm.api_key = os.environ.get("LIYING_LLM_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or ""
+        if not c.llm.base_url:
+            c.llm.base_url = os.environ.get("LIYING_LLM_BASE_URL") or os.environ.get("BASE_URL") or ""
+        if not c.llm.model:
+            c.llm.model = os.environ.get("LIYING_LLM_MODEL") or os.environ.get("MODEL") or ""
+
+        # TTS
+        if not c.tts.remote_url:
+            c.tts.remote_url = os.environ.get("LIYING_TTS_REMOTE_URL") or os.environ.get("REMOTE_TTS_URL") or ""
+        if c.tts.spk_id == "玲":  # default value
+            env_spk = os.environ.get("LIYING_TTS_SPK_ID")
+            if env_spk:
+                c.tts.spk_id = env_spk
+        if not c.tts.model_dir:
+            env_tts_dir = os.environ.get("LIYING_TTS_MODEL_DIR")
+            if env_tts_dir:
+                c.tts.model_dir = env_tts_dir
+
+        # ASR
+        if not c.asr.model_dir:
+            env_asr_dir = os.environ.get("LIYING_ASR_MODEL_DIR")
+            if env_asr_dir:
+                c.asr.model_dir = env_asr_dir
+        if not c.asr.vad_model_dir:
+            env_vad_dir = os.environ.get("LIYING_ASR_VAD_DIR")
+            if env_vad_dir:
+                c.asr.vad_model_dir = env_vad_dir
+
+        # General
+        if c.general.user_id == "default_user":
+            env_uid = os.environ.get("LIYING_USER_ID")
+            if env_uid:
+                c.general.user_id = env_uid
+
+    def _parse_config(self, data: Dict[str, Any]) -> SystemConfig:
+        config = SystemConfig()
+
+        config.version = data.get("version", "2.0.0")
+        config.description = data.get("description", "")
+
+        # LLM
+        if "llm" in data:
+            config.llm = _parse_sub_config(data["llm"], LLMConfig)
+
+        # ASR
+        if "asr" in data:
+            config.asr = _parse_sub_config(data["asr"], ASRConfig)
+
+        # TTS
+        if "tts" in data:
+            config.tts = _parse_sub_config(data["tts"], TTSConfig)
+
+        # Punc
+        if "punc" in data:
+            config.punc = _parse_sub_config(data["punc"], PuncConfig)
+
+        # SER
+        if "ser" in data:
+            config.ser = _parse_sub_config(data["ser"], SERConfig)
+
+        # SV
+        if "sv" in data:
+            config.sv = _parse_sub_config(data["sv"], SVConfig)
+
+        # Diarization
+        if "diarization" in data:
+            config.diarization = _parse_sub_config(data["diarization"], DiarizationConfig)
+
+        # Interrupt
+        if "interrupt" in data:
+            config.interrupt = _parse_sub_config(data["interrupt"], InterruptConfig)
+
+        # Audio
+        if "audio" in data:
+            config.audio = _parse_sub_config(data["audio"], AudioConfig)
+
+        # Performance
+        if "performance" in data:
+            config.performance = _parse_sub_config(data["performance"], PerformanceConfig)
+
+        # Speaker recognition
+        if "speaker_recognition" in data:
+            config.speaker_recognition = _parse_sub_config(data["speaker_recognition"], SpeakerRecognitionConfig)
+
+        # Advanced
+        if "advanced" in data:
+            config.advanced = _parse_sub_config(data["advanced"], AdvancedConfig)
+
+        # General
         if "general" in data:
             gen_data = data["general"]
-            config.general = GeneralConfig(
-                use_text_input=gen_data.get("use_text_input", False),
-            )
-        
+            if "use_text_input" in gen_data:
+                config.general.use_text_input = gen_data["use_text_input"]
+            if "user_id" in gen_data:
+                config.general.user_id = gen_data["user_id"]
+            if "auto_listen" in gen_data:
+                config.general.auto_listen = gen_data["auto_listen"]
+
         return config
-    
+
     def _validate_config(self):
-        """验证配置参数（返回警告而非抛异常，提高系统容错性）"""
-        warnings = []
+        errors = []
 
-        # 验证 ASR 配置
         if self.config.asr.stream_profile not in ["low_latency", "balanced", "accuracy"]:
-            warnings.append(f"无效的 ASR stream_profile: {self.config.asr.stream_profile}，将使用默认值 'balanced'")
-            self.config.asr.stream_profile = "balanced"
+            errors.append(f"无效的 ASR stream_profile: {self.config.asr.stream_profile}")
 
-        # 验证 TTS 配置
         if self.config.tts.cache_size < 0:
-            warnings.append(f"无效的 TTS cache_size: {self.config.tts.cache_size}，将使用默认值 100")
-            self.config.tts.cache_size = 100
+            errors.append(f"无效的 TTS cache_size: {self.config.tts.cache_size}")
 
         if self.config.tts.max_workers < 1:
-            warnings.append(f"无效的 TTS max_workers: {self.config.tts.max_workers}，将使用默认值 2")
-            self.config.tts.max_workers = 2
+            errors.append(f"无效的 TTS max_workers: {self.config.tts.max_workers}")
 
-        # 验证打断配置
         if self.config.interrupt.context_mode not in ["reset", "continue"]:
-            warnings.append(f"无效的 interrupt context_mode: {self.config.interrupt.context_mode}，将使用默认值 'reset'")
-            self.config.interrupt.context_mode = "reset"
+            errors.append(f"无效的 interrupt context_mode: {self.config.interrupt.context_mode}")
 
         if self.config.interrupt.min_speech_ms < 0:
-            warnings.append(f"无效的 interrupt min_speech_ms: {self.config.interrupt.min_speech_ms}，将使用默认值 500")
-            self.config.interrupt.min_speech_ms = 500
+            errors.append(f"无效的 interrupt min_speech_ms: {self.config.interrupt.min_speech_ms}")
 
-        # 验证音频配置
         if self.config.audio.vad_backend not in ["rms", "silero"]:
-            warnings.append(f"无效的 audio vad_backend: {self.config.audio.vad_backend}，将使用默认值 'rms'")
-            self.config.audio.vad_backend = "rms"
+            errors.append(f"无效的 audio vad_backend: {self.config.audio.vad_backend}")
 
         if self.config.audio.vad_preset not in ["sensitive", "balanced", "aggressive"]:
-            warnings.append(f"无效的 audio vad_preset: {self.config.audio.vad_preset}，将使用默认值 'balanced'")
-            self.config.audio.vad_preset = "balanced"
+            errors.append(f"无效的 audio vad_preset: {self.config.audio.vad_preset}")
 
-        # 验证性能监控配置
         if self.config.performance.export_format not in ["json", "csv"]:
-            warnings.append(f"无效的 performance export_format: {self.config.performance.export_format}，将使用默认值 'json'")
-            self.config.performance.export_format = "json"
+            errors.append(f"无效的 performance export_format: {self.config.performance.export_format}")
 
-        # 输出警告但不抛异常
-        if warnings:
-            warning_msg = "\n".join(warnings)
-            log.warning(f"配置验证警告（已自动修正）:\n{warning_msg}")
-    
+        if errors:
+            error_msg = "\n".join(errors)
+            log.error(f"配置验证失败:\n{error_msg}")
+            raise ValueError(f"配置验证失败:\n{error_msg}")
+
     def save(self, config: Optional[SystemConfig] = None):
-        """
-        保存配置到文件
-        
-        Args:
-            config: 要保存的配置对象，默认为当前配置
-        """
         if config is not None:
             self.config = config
-        
-        # 转换为字典
+
+        c = self.config
         data = {
-            "version": self.config.version,
-            "description": self.config.description,
+            "version": c.version,
+            "description": c.description,
+            "llm": {
+                "api_key": c.llm.api_key,
+                "base_url": c.llm.base_url,
+                "model": c.llm.model,
+                "temperature": c.llm.temperature,
+                "max_tokens": c.llm.max_tokens,
+                "timeout": c.llm.timeout,
+            },
             "asr": {
-                "provider": self.config.asr.provider,
-                "device": self.config.asr.device,
-                "stream_profile": self.config.asr.stream_profile,
-                "hotwords": self.config.asr.hotwords,
-                "hotword_weight": self.config.asr.hotword_weight,
-                "enable_model_cache": self.config.asr.enable_model_cache,
-                "cache_warmup": self.config.asr.cache_warmup,
+                "provider": c.asr.provider,
+                "device": c.asr.device,
+                "stream_profile": c.asr.stream_profile,
+                "model_dir": c.asr.model_dir,
+                "vad_model_dir": c.asr.vad_model_dir,
+                "whisper_api_base": c.asr.whisper_api_base,
+                "whisper_api_key": c.asr.whisper_api_key,
+                "hotwords": c.asr.hotwords,
+                "hotword_weight": c.asr.hotword_weight,
+                "enable_model_cache": c.asr.enable_model_cache,
+                "cache_warmup": c.asr.cache_warmup,
             },
             "tts": {
-                "enable_cache": self.config.tts.enable_cache,
-                "cache_size": self.config.tts.cache_size,
-                "cache_common_phrases": self.config.tts.cache_common_phrases,
-                "parallel_synthesis": self.config.tts.parallel_synthesis,
-                "max_workers": self.config.tts.max_workers,
+                "model_dir": c.tts.model_dir,
+                "remote_url": c.tts.remote_url,
+                "spk_id": c.tts.spk_id,
+                "enable_cache": c.tts.enable_cache,
+                "cache_size": c.tts.cache_size,
+                "cache_common_phrases": c.tts.cache_common_phrases,
+                "parallel_synthesis": c.tts.parallel_synthesis,
+                "max_workers": c.tts.max_workers,
+            },
+            "punc": {
+                "enable": c.punc.enable,
+                "model_id": c.punc.model_id,
+                "device": c.punc.device,
+            },
+            "ser": {
+                "enable": c.ser.enable,
+                "model_id": c.ser.model_id,
+                "device": c.ser.device,
+                "min_audio_sec": c.ser.min_audio_sec,
+            },
+            "sv": {
+                "enable": c.sv.enable,
+                "model_id": c.sv.model_id,
+                "device": c.sv.device,
+                "threshold": c.sv.threshold,
+                "min_audio_sec": c.sv.min_audio_sec,
+                "enroll_audio": c.sv.enroll_audio,
+                "reject_policy": c.sv.reject_policy,
+            },
+            "diarization": {
+                "enable": c.diarization.enable,
+                "threshold": c.diarization.threshold,
+                "model_id": c.diarization.model_id,
+                "device": c.diarization.device,
+                "min_audio_sec": c.diarization.min_audio_sec,
+                "storage_path": c.diarization.storage_path,
+                "max_speakers": c.diarization.max_speakers,
+                "timeout_ms": c.diarization.timeout_ms,
+                "notify_speaker_change": c.diarization.notify_speaker_change,
+                "allow_concurrent_speakers": c.diarization.allow_concurrent_speakers,
+                "voiceprint_cleanup_days": c.diarization.voiceprint_cleanup_days,
             },
             "interrupt": {
-                "enable_barge_in": self.config.interrupt.enable_barge_in,
-                "vad_threshold": self.config.interrupt.vad_threshold,
-                "min_speech_ms": self.config.interrupt.min_speech_ms,
-                "response_time_ms": self.config.interrupt.response_time_ms,
-                "context_mode": self.config.interrupt.context_mode,
-                "feedback_enabled": self.config.interrupt.feedback_enabled,
-                "sound_enabled": self.config.interrupt.sound_enabled,
+                "enable_barge_in": c.interrupt.enable_barge_in,
+                "vad_threshold": c.interrupt.vad_threshold,
+                "min_speech_ms": c.interrupt.min_speech_ms,
+                "response_time_ms": c.interrupt.response_time_ms,
+                "context_mode": c.interrupt.context_mode,
+                "feedback_enabled": c.interrupt.feedback_enabled,
+                "sound_enabled": c.interrupt.sound_enabled,
             },
             "audio": {
-                "sample_rate": self.config.audio.sample_rate,
-                "silence_threshold": self.config.audio.silence_threshold,
-                "silence_duration": self.config.audio.silence_duration,
-                "vad_backend": self.config.audio.vad_backend,
-                "vad_preset": self.config.audio.vad_preset,
-                "use_vad": self.config.audio.use_vad,
+                "sample_rate": c.audio.sample_rate,
+                "silence_threshold": c.audio.silence_threshold,
+                "silence_duration": c.audio.silence_duration,
+                "vad_backend": c.audio.vad_backend,
+                "vad_preset": c.audio.vad_preset,
+                "use_vad": c.audio.use_vad,
             },
             "performance": {
-                "enable_monitoring": self.config.performance.enable_monitoring,
-                "max_history_size": self.config.performance.max_history_size,
-                "export_interval_seconds": self.config.performance.export_interval_seconds,
-                "export_format": self.config.performance.export_format,
+                "enable_monitoring": c.performance.enable_monitoring,
+                "max_history_size": c.performance.max_history_size,
+                "export_interval_seconds": c.performance.export_interval_seconds,
+                "export_format": c.performance.export_format,
             },
             "speaker_recognition": {
-                "enable": self.config.speaker_recognition.enable,
-                "async_recognition": self.config.speaker_recognition.async_recognition,
-                "timeout_ms": self.config.speaker_recognition.timeout_ms,
-                "enable_cache": self.config.speaker_recognition.enable_cache,
-                "cache_size": self.config.speaker_recognition.cache_size,
+                "enable": c.speaker_recognition.enable,
+                "async_recognition": c.speaker_recognition.async_recognition,
+                "timeout_ms": c.speaker_recognition.timeout_ms,
+                "enable_cache": c.speaker_recognition.enable_cache,
+                "cache_size": c.speaker_recognition.cache_size,
             },
             "advanced": {
-                "enable_debug_logging": self.config.advanced.enable_debug_logging,
-                "log_performance_metrics": self.config.advanced.log_performance_metrics,
-                "auto_optimize": self.config.advanced.auto_optimize,
+                "enable_debug_logging": c.advanced.enable_debug_logging,
+                "log_performance_metrics": c.advanced.log_performance_metrics,
+                "auto_optimize": c.advanced.auto_optimize,
             },
             "general": {
-                "use_text_input": self.config.general.use_text_input,
+                "use_text_input": c.general.use_text_input,
+                "user_id": c.general.user_id,
+                "auto_listen": c.general.auto_listen,
             },
         }
-        
-        # 确保目录存在
+
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # 保存到文件
+
         try:
             with open(self.config_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
-            
-            # 更新文件修改时间
+
             self._file_mtime = self.config_path.stat().st_mtime
-            
             log.info(f"配置文件保存成功: {self.config_path}")
         except Exception as e:
             log.error(f"保存配置文件失败: {e}")
             raise
-    
+
     def check_for_updates(self) -> bool:
-        """
-        检查配置文件是否已更新
-        
-        Returns:
-            bool: 如果文件已更新返回 True
-        """
         if not self.config_path.exists():
             return False
-        
+
         try:
             current_mtime = self.config_path.stat().st_mtime
             if self._file_mtime is None or current_mtime > self._file_mtime:
@@ -412,14 +526,8 @@ class ConfigManager:
             return False
         except Exception:
             return False
-    
+
     def reload_if_changed(self) -> bool:
-        """
-        如果配置文件已更改，则重新加载
-        
-        Returns:
-            bool: 如果重新加载了配置返回 True
-        """
         if self.check_for_updates():
             log.info("检测到配置文件更新，正在重新加载...")
             self.load()
@@ -427,7 +535,10 @@ class ConfigManager:
         return False
 
 
-# 全局配置管理器实例
+# ============================================================
+#  全局单例
+# ============================================================
+
 _config_manager: Optional[ConfigManager] = None
 
 

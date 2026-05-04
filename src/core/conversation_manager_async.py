@@ -38,6 +38,7 @@ from core.performance_metrics import (
     InterruptMetrics,
 )
 from core.tts_cache import TTSCache
+from core.config_manager import SystemConfig, get_config_manager
 
 # 添加路径
 project_root = Path(__file__).parent.parent.parent
@@ -50,94 +51,6 @@ class ConversationState(Enum):
     PROCESSING = "processing"
     SPEAKING = "speaking"
     PAUSED = "paused"
-
-
-@dataclass
-class ConversationConfig:
-    """对话配置"""
-    # ASR 配置
-    asr_model_dir: str = None
-    asr_provider: str = "funasr"
-    asr_device: str = "auto"
-    asr_stream_profile: str = "balanced"
-    whisper_api_base: str = None
-    whisper_api_key: str = None
-    use_vad: bool = True
-    use_text_input: bool = False
-    
-    # ASR 性能优化配置
-    asr_hotwords: list = None  # 热词列表，例如 ["小米", "智能家居"]
-    asr_hotword_weight: float = 10.0  # 热词权重
-    asr_enable_model_cache: bool = True  # 启用模型缓存
-    asr_cache_warmup: bool = False  # 启动时预热模型
-
-    # PUNC 配置
-    enable_punc: bool = True
-    punc_model_id: str = None
-    punc_device: str = "auto"
-    
-    # TTS 配置
-    tts_model_dir: str = None
-    tts_remote_url: str = None
-    tts_spk_id: str = None
-    
-    # TTS 性能优化配置
-    tts_enable_cache: bool = True  # 启用短语缓存
-    tts_cache_size: int = 100  # 缓存大小（LRU）
-    tts_cache_common_phrases: list = None  # 常用短语列表，例如 ["好的", "明白了", "收到"]
-    tts_parallel_synthesis: bool = True  # 启用并行合成
-    tts_max_workers: int = 2  # 并行合成的最大工作线程数
-    
-    # Agent 配置
-    user_id: str = "default_user"
-    
-    # 音频配置
-    sample_rate: int = 16000
-    silence_threshold: float = 0.01
-    silence_duration: float = 0.6
-    vad_backend: str = "rms"
-    vad_preset: str = "balanced"
-    
-    # 交互配置
-    interrupt_on_speak: bool = True
-    auto_listen: bool = True
-
-    # SER 配置
-    enable_ser: bool = True
-    ser_model_id: str = None
-    ser_device: str = "auto"
-    ser_min_audio_sec: float = 0.8
-
-    # SV 配置
-    enable_sv: bool = False
-    sv_model_id: str = None
-    sv_device: str = "auto"
-    sv_threshold: float = 0.38
-    sv_min_audio_sec: float = 0.8
-    sv_enroll_audio: str = None
-    sv_reject_policy: str = "drop"
-
-    # 多说话人识别配置
-    enable_diarization: bool = False
-    diarization_threshold: float = 0.75
-    diarization_model_id: str = None
-    diarization_device: str = "auto"
-    diarization_min_audio_sec: float = 0.8
-    diarization_storage_path: str = None
-    diarization_max_speakers: int = 10
-    diarization_timeout_ms: int = 500
-    notify_speaker_change: bool = True
-    allow_concurrent_speakers: bool = False
-    voiceprint_cleanup_days: int = 180
-    
-    # 流式打断配置
-    enable_barge_in: bool = True
-    interrupt_vad_threshold: float = 0.5
-    interrupt_min_speech_ms: int = 300
-    interrupt_response_time_ms: int = 200
-    interrupt_context_mode: str = "reset"
-    interrupt_feedback_enabled: bool = True
-    interrupt_sound_enabled: bool = False
 
 
 # ============================================================
@@ -217,8 +130,8 @@ class AsyncConversationManager:
     4. 去重机制
     """
     
-    def __init__(self, config: ConversationConfig = None):
-        self.config = config or ConversationConfig()
+    def __init__(self, config: SystemConfig = None):
+        self.config = config or get_config_manager().config
         self.state = ConversationState.IDLE
         
         # 组件（延迟初始化）
@@ -248,7 +161,7 @@ class AsyncConversationManager:
         
         # 多说话人识别
         self._diarization = None
-        self._current_user_id: str = self.config.user_id
+        self._current_user_id: str = self.config.general.user_id
         self._on_speaker_change_callback: Optional[Callable] = None
         
         # Turn 管理（学习 Yione）
@@ -281,7 +194,7 @@ class AsyncConversationManager:
     
     def _get_asr_stream_profile(self) -> dict:
         """根据配置返回 ASR 流式参数档位"""
-        profile = (self.config.asr_stream_profile or "balanced").strip().lower()
+        profile = (self.config.asr.stream_profile or "balanced").strip().lower()
         presets = {
             "low_latency": {
                 "chunk_size": [0, 8, 4],
@@ -350,18 +263,18 @@ class AsyncConversationManager:
         if self._asr is not None:
             return
         
-        if self.config.use_text_input:
+        if self.config.general.use_text_input:
             log.debug("[对话] 使用文字输入模式，跳过 ASR 初始化")
             self._asr = None
             return
         
-        provider = (self.config.asr_provider or "funasr").lower()
+        provider = (self.config.asr.provider or "funasr").lower()
         
         if provider == "whisper":
             try:
                 from backend.asr.providers import WhisperRemoteProvider
-                base = self.config.whisper_api_base or "https://api.openai.com/v1"
-                key = self.config.whisper_api_key or ""
+                base = self.config.asr.whisper_api_base or "https://api.openai.com/v1"
+                key = self.config.asr.whisper_api_key or ""
                 self._asr = WhisperRemoteProvider(api_base=base, api_key=key)
                 log.debug("[对话] ASR: Whisper 远程模式")
             except Exception as e:
@@ -373,7 +286,7 @@ class AsyncConversationManager:
         try:
             from backend.asr.providers import FunASRProvider
             
-            model_dir = self.config.asr_model_dir
+            model_dir = self.config.asr.model_dir
             if not model_dir:
                 try:
                     from core.settings import AppSettings
@@ -390,7 +303,7 @@ class AsyncConversationManager:
                         break
             
             vad_model = None
-            if self.config.use_vad:
+            if self.config.audio.use_vad:
                 try:
                     from core.settings import AppSettings
                     s = AppSettings.load()
@@ -407,7 +320,7 @@ class AsyncConversationManager:
                 vad_model = vad_model or "fsmn-vad"
             
             if model_dir and Path(model_dir).exists():
-                asr_device = self._resolve_asr_device(self.config.asr_device)
+                asr_device = self._resolve_asr_device(self.config.asr.device)
                 stream_cfg = self._get_asr_stream_profile()
                 self._asr = FunASRProvider(
                     model_dir=model_dir,
@@ -434,23 +347,23 @@ class AsyncConversationManager:
             return
         
         # 优先使用远程 TTS
-        if self.config.tts_remote_url:
+        if self.config.tts.remote_url:
             try:
                 from backend.tts.remote_client import RemoteTTSClient, RemoteTTSConfig
                 
                 remote_config = RemoteTTSConfig(
-                    base_url=self.config.tts_remote_url,
-                    spk_id=self.config.tts_spk_id,
+                    base_url=self.config.tts.remote_url,
+                    spk_id=self.config.tts.spk_id,
                 )
                 client = RemoteTTSClient(remote_config)
                 
                 if client.health_check():
                     self._tts = client
                     self._tts_mode = "remote"
-                    log.debug(f"[对话] TTS 远程服务初始化完成: {self.config.tts_remote_url}")
+                    log.debug(f"[对话] TTS 远程服务初始化完成: {self.config.tts.remote_url}")
                     return
                 else:
-                    log.warn(f"TTS 远程服务不可用: {self.config.tts_remote_url}")
+                    log.warn(f"TTS 远程服务不可用: {self.config.tts.remote_url}")
             except Exception as e:
                 log.warn(f"TTS 远程服务初始化失败: {e}")
         
@@ -458,7 +371,7 @@ class AsyncConversationManager:
         try:
             from backend.tts.engine import CosyvoiceRealTimeTTS
             
-            model_dir = self.config.tts_model_dir
+            model_dir = self.config.tts.model_dir
             if not model_dir:
                 default_paths = [
                     project_root / "models" / "TTS" / "CosyVoice2-0.5B",
@@ -489,19 +402,19 @@ class AsyncConversationManager:
             self._tts_mode = None
         
         # 初始化 TTS 缓存
-        if self._tts and self.config.tts_enable_cache:
+        if self._tts and self.config.tts.enable_cache:
             try:
-                cache_dir = project_root / "cache" / "tts" if self.config.tts_enable_cache else None
+                cache_dir = project_root / "cache" / "tts" if self.config.tts.enable_cache else None
                 self._tts_cache = TTSCache(
-                    max_size=self.config.tts_cache_size,
+                    max_size=self.config.tts.cache_size,
                     cache_dir=cache_dir,
                     enable_disk_cache=False,  # 暂时禁用磁盘缓存
                 )
-                log.debug(f"[对话] TTS 缓存初始化完成 (大小: {self.config.tts_cache_size})")
+                log.debug(f"[对话] TTS 缓存初始化完成 (大小: {self.config.tts.cache_size})")
                 
                 # 预加载常用短语
-                if self.config.tts_cache_common_phrases:
-                    log.info(f"[对话] 预加载 {len(self.config.tts_cache_common_phrases)} 个常用短语...")
+                if self.config.tts.cache_common_phrases:
+                    log.info(f"[对话] 预加载 {len(self.config.tts.cache_common_phrases)} 个常用短语...")
                     # 注意：预加载需要在后台线程中进行，避免阻塞初始化
                     # 这里暂时跳过，可以在首次使用时按需加载
             except Exception as e:
@@ -516,7 +429,7 @@ class AsyncConversationManager:
         try:
             from backend.llm.agent import Agent
             
-            self._agent = Agent(user_id=self.config.user_id)
+            self._agent = Agent(user_id=self.config.general.user_id)
             self._agent.start_chat()
             log.debug("[对话] Agent 初始化完成")
         except Exception as e:
@@ -531,19 +444,19 @@ class AsyncConversationManager:
         if self._asr and hasattr(self._asr, "get_chunk_stride"):
             chunk_size = self._asr.get_chunk_stride()
         
-        vad_config = VADConfig.preset(self.config.vad_preset)
-        vad_config.backend = self.config.vad_backend
-        vad_config.silence_duration = self.config.silence_duration
+        vad_config = VADConfig.preset(self.config.audio.vad_preset)
+        vad_config.backend = self.config.audio.vad_backend
+        vad_config.silence_duration = self.config.audio.silence_duration
         vad_config.min_speech_chunks = max(2, vad_config.min_speech_chunks)
         vad_config.hangover_chunks = max(1, vad_config.hangover_chunks)
         vad_config.pre_buffer_chunks = max(2, vad_config.pre_buffer_chunks)
         
         audio_config = AudioConfig(
-            sample_rate=self.config.sample_rate,
+            sample_rate=self.config.audio.sample_rate,
             dtype="float32",
             chunk_size=chunk_size,
             vad_config=vad_config,
-            vad_backend=self.config.vad_backend,
+            vad_backend=self.config.audio.vad_backend,
         )
         self._audio_input = AudioInput(audio_config)
         self._audio_output = AudioOutput()
@@ -1146,7 +1059,7 @@ class AsyncConversationManager:
         self._perf_monitor.record_interrupt(interrupt_metrics)
         
         # 显示打断反馈
-        if self.config.interrupt_feedback_enabled:
+        if self.config.interrupt.feedback_enabled:
             self._send_subtitle("⚠️ 已打断", is_final=True, emotion="neutral")
         
         log.info(f"[打断统计] 总打断次数: {self._interrupt_count}, 响应时间: {response_time_ms:.1f}ms")
@@ -1188,7 +1101,7 @@ class AsyncConversationManager:
         self._running.set()
 
         # 文字输入模式：创建队列供外部投递
-        if self.config.use_text_input:
+        if self.config.general.use_text_input:
             self._user_text_queue = asyncio.Queue()
             log.info("[文字输入] 队列已创建，等待外部投递...")
 
@@ -1319,8 +1232,9 @@ def start_async_conversation(
     blocking: bool = True
 ) -> AsyncConversationManager:
     """快速启动异步对话"""
-    config = ConversationConfig(user_id=user_id)
-    manager = AsyncConversationManager(config)
+    cfg = get_config_manager().config
+    cfg.general.user_id = user_id
+    manager = AsyncConversationManager(cfg)
     manager.start(blocking=blocking)
     return manager
 

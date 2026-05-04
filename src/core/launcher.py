@@ -10,11 +10,6 @@ from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QDialog, QVBox
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtCore import Qt
 
-# Add project root to path
-project_root = Path(__file__).parent.parent.parent
-src_path = project_root / "src"
-sys.path.insert(0, str(src_path))
-
 from core.log import log, set_debug
 from gui.main_window import MainWindow
 from core.settings import AppSettings
@@ -300,24 +295,17 @@ class Launcher:
         def run_conversation():
             try:
                 import asyncio
-                from core.conversation_manager_async import AsyncConversationManager, ConversationConfig
-                
-                config = ConversationConfig(
-                    user_id=os.environ.get("LIYING_USER_ID", "default_user"),
-                    use_vad=True,
-                    silence_duration=0.55,
-                    asr_device=self.asr_device,
-                    tts_remote_url=os.environ.get("LIYING_TTS_REMOTE_URL") or None,
-                    tts_spk_id=os.environ.get("LIYING_TTS_SPK_ID", "玲"),
-                    use_text_input=self.text_only,  # 文字输入模式
-                    # 异步优化配置
-                    enable_barge_in=True,  # 启用打断功能
-                    tts_enable_cache=True,  # 启用 TTS 缓存
-                    tts_cache_size=100,  # 缓存大小
-                    asr_stream_profile="balanced",  # ASR 流式配置（balanced/low_latency/accuracy）
-                )
-                
-                self._conversation_manager = AsyncConversationManager(config)
+                from core.conversation_manager_async import AsyncConversationManager
+                from core.config_manager import get_config_manager
+
+                cfg = get_config_manager().config
+                # CLI 参数覆盖配置
+                if self.asr_device and self.asr_device != "auto":
+                    cfg.asr.device = self.asr_device
+                if self.text_only:
+                    cfg.general.use_text_input = True
+
+                self._conversation_manager = AsyncConversationManager(cfg)
 
                 # 注册 user_text handler（WebSocket 来源的文字输入）
                 if self.text_only and self._message_server:
@@ -552,9 +540,9 @@ class Launcher:
                                 remaining = self.live2d_process.stdout.read()
                                 if remaining:
                                     log.debug(f"剩余输出:\n{remaining}")
-                            except:
+                            except (OSError, ValueError):
                                 pass
-                    
+
                     output_thread = threading.Thread(target=read_output, daemon=True)
                     output_thread.start()
                     
@@ -569,9 +557,9 @@ class Launcher:
                                     stderr_content = self.live2d_process.stderr.read()
                                     if stderr_content:
                                         print(f"[DEBUG] 错误输出:\n{stderr_content}")
-                            except:
+                            except (OSError, ValueError):
                                 pass
-                    
+
                     monitor_thread = threading.Thread(target=monitor_process, daemon=True)
                     monitor_thread.start()
                 else:
@@ -621,7 +609,7 @@ class Launcher:
                                 remaining_output = self.live2d_process.stdout.read()
                                 if remaining_output:
                                     print(f"[DEBUG] 剩余输出:\n{remaining_output}")
-                        except:
+                        except (OSError, ValueError):
                             pass
             except Exception as e:
                 log.error(f"Failed to start Live2D: {e}")

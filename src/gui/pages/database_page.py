@@ -372,7 +372,7 @@ class DatabasePage(QWidget):
                 client = get_chroma_client()
                 collection = client.get_or_create_collection("liying_memories")
                 stats.append(("向量数据", collection.count()))
-            except:
+            except Exception:
                 stats.append(("向量数据", "N/A"))
             
             self.detail_stats_table.setRowCount(len(stats))
@@ -756,7 +756,7 @@ class DatabasePage(QWidget):
                 client = get_chroma_client()
                 try:
                     client.delete_collection("liying_memories")
-                except:
+                except Exception:
                     pass
                 QMessageBox.information(self, "成功", "向量数据库已清空")
                 self.load_data()
@@ -798,9 +798,9 @@ class DatabasePage(QWidget):
                     try:
                         client = get_chroma_client()
                         client.delete_collection("liying_memories")
-                    except:
+                    except Exception:
                         pass
-                    
+
                     QMessageBox.information(self, "成功", "所有数据已重置")
                     self.load_data()
                 except Exception as e:

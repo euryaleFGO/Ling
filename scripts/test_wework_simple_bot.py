@@ -120,7 +120,7 @@ def test_webhook_message(base_url: str = "http://localhost:8080"):
             try:
                 data = response.json()
                 print(f"   响应: {data}")
-            except:
+            except ValueError:
                 print(f"   响应: {response.text}")
             return True
         else:

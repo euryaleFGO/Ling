@@ -43,18 +43,8 @@ class SpeakerPage(QWidget):
         super().__init__()
         self.project_root = Path(__file__).parent.parent.parent.parent  # .../Liying
         self.src_path = self.project_root / "src"
-        if str(self.src_path) not in sys.path:
-            sys.path.insert(0, str(self.src_path))
-
-        # TTS 根目录（让 from engine import ... 可用）
         self.tts_root = self.project_root / "src" / "backend" / "tts"
-        if str(self.tts_root) not in sys.path:
-            sys.path.insert(0, str(self.tts_root))
-
-        # Matcha-TTS（cosyvoice 依赖）
         self.matcha_path = self.tts_root / "third_party" / "Matcha-TTS"
-        if str(self.matcha_path) not in sys.path:
-            sys.path.insert(0, str(self.matcha_path))
 
         try:
             from core.settings import AppSettings

@@ -30,7 +30,7 @@ def tail_file(filepath, lines=20):
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             return f.readlines()[-lines:]
-    except:
+    except (OSError, IOError):
         return []
 
 
@@ -93,9 +93,9 @@ def colorize(line: str) -> str:
     try:
         import os
         os.system('')  # 启用 ANSI 支持
-    except:
+    except (AttributeError, OSError):
         pass
-    
+
     # 颜色代码
     RESET = "\033[0m"
     RED = "\033[91m"

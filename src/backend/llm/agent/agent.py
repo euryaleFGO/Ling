@@ -8,6 +8,9 @@ import json
 import time
 import threading
 import queue
+from pathlib import Path
+
+_project_root = str(Path(__file__).resolve().parent.parent.parent.parent)
 
 from ..api_infer.openai_infer import APIInfer
 from ..api_infer.config import DEEPSEEK_API_KEY, BASE_URL, MODEL
@@ -165,7 +168,7 @@ class Agent:
         # 自动修复工具（重启服务、回滚配置、重试操作、运行命令）
         self._tool_manager.register(AutoFixTool())
         # 代码修改工具（安全的文件读写、修改、回滚）
-        self._tool_manager.register(CodeModifyTool(project_root="E:/Avalon/Chaldea/Liying"))
+        self._tool_manager.register(CodeModifyTool(project_root=_project_root))
 
     def set_tool_status_callback(self, callback: Callable[[str, str, str], None]):
         """设置工具状态回调（用于通知用户工具执行状态）

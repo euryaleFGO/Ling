@@ -442,7 +442,7 @@ class VisionEngine:
             import torch
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-        except:
+        except Exception:
             pass
 
     def get_loaded_modules(self) -> List[str]:

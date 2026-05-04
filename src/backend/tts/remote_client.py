@@ -84,9 +84,9 @@ class RemoteTTSClient:
                 timeout=5
             )
             return resp.status_code == 200
-        except:
+        except Exception:
             return False
-    
+
     def generate_audio(self, text: str) -> Optional[Tuple[np.ndarray, int]]:
         """
         同步生成音频

@@ -14,15 +14,9 @@ import time
 import hashlib
 import hmac
 import base64
-from pathlib import Path
 from typing import Dict, Any, Optional
 from flask import Flask, request, jsonify
 import logging
-
-# 添加项目路径
-project_root = Path(__file__).parent.parent.parent
-src_path = project_root / "src"
-sys.path.insert(0, str(src_path))
 
 from backend.llm.agent.agent import Agent
 from core.log import log

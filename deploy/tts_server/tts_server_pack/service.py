@@ -568,9 +568,9 @@ if __name__ == '__main__':
     if sys.stdout.encoding != 'utf-8':
         try:
             sys.stdout.reconfigure(encoding='utf-8')
-        except:
+        except (AttributeError, OSError):
             pass
-    
+
     # 解析命令行参数
     parser = argparse.ArgumentParser(description='TTS 服务')
     parser.add_argument('--host', default='0.0.0.0', help='服务地址')

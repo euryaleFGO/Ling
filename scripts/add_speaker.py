@@ -29,7 +29,6 @@ def get_tts_engine():
     # 找到 TTS 模型目录
     model_paths = [
         project_root / "models" / "TTS" / "CosyVoice2-0.5B",
-        Path("E:/Avalon/Chaldea/Liying/models/TTS/CosyVoice2-0.5B"),
     ]
     
     model_path = None

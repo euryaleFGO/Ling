@@ -50,7 +50,7 @@ def is_mongodb_running():
                 timeout=5
             )
             return result.returncode == 0
-        except:
+        except (subprocess.SubprocessError, OSError):
             return False
     else:
         # Windows: 检查进程
@@ -62,7 +62,7 @@ def is_mongodb_running():
                 timeout=5
             )
             return "mongod.exe" in result.stdout
-        except:
+        except (subprocess.SubprocessError, OSError):
             return False
 
 
