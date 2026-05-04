@@ -40,12 +40,12 @@ class RemoteASRConfig:
 class RemoteASRClient:
     """
     远程 ASR 客户端
-    
+
     支持两种模式：
     1. 批量模式：录音完成后一次性发送识别
     2. 流式模式：边录边发，实时返回识别结果（如果服务端支持）
     """
-    
+
     def __init__(self, config: RemoteASRConfig = None):
         if config is None:
             try:
@@ -66,17 +66,41 @@ class RemoteASRClient:
                 logging.warning(f"加载 ASR URL 失败，使用默认值: {e}")
                 config.base_url = "http://localhost:5002"  # type: ignore[misc]
         self.config = config
-        self._session = requests.Session()
+        self._session: Optional[requests.Session] = None
         self._buffer = []  # 用于流式模式的音频缓冲
-    
+
+    def _get_session(self) -> requests.Session:
+        """获取或创建 HTTP Session（懒初始化）"""
+        if self._session is None:
+            self._session = requests.Session()
+        return self._session
+
+    def close(self):
+        """关闭 HTTP Session，释放资源"""
+        if self._session is not None:
+            self._session.close()
+            self._session = None
+
+    def __del__(self):
+        """析构时关闭 Session"""
+        self.close()
+
+    def __enter__(self):
+        """上下文管理器入口"""
+        return self
+
+    def __exit__(self, *args):
+        """上下文管理器出口"""
+        self.close()
+
     @property
     def base_url(self) -> str:
         return self.config.base_url.rstrip('/')
-    
+
     def health_check(self) -> bool:
         """检查 ASR 服务是否可用"""
         try:
-            resp = self._session.get(
+            resp = self._get_session().get(
                 f"{self.base_url}/health",
                 timeout=5
             )
@@ -103,7 +127,7 @@ class RemoteASRClient:
             audio_b64 = base64.b64encode(wav_bytes).decode('utf-8')
             
             # 发送请求
-            resp = self._session.post(
+            resp = self._get_session().post(
                 f"{self.base_url}/asr/recognize",
                 json={
                     "audio": audio_b64,

@@ -47,30 +47,58 @@ class RemoteTTSConfig:
 class RemoteTTSClient:
     """
     远程 TTS 客户端
-    
+
     支持两种模式：
     1. 同步模式：一次性生成全部音频
     2. 流式模式：分段生成，边收边播
     """
-    
+
     def __init__(self, config: RemoteTTSConfig = None):
         if config is None:
             try:
                 from core.settings import AppSettings
                 s = AppSettings.load()
                 config = RemoteTTSConfig(base_url=s.remote_tts_url)
-            except Exception:
+            except Exception as e:
+                import logging
+                logging.warning(f"加载 TTS 配置失败，使用默认值: {e}")
                 config = RemoteTTSConfig(base_url="http://localhost:5001")
         elif not config.base_url:
             try:
                 from core.settings import AppSettings
                 s = AppSettings.load()
                 config.base_url = s.remote_tts_url  # type: ignore[misc]
-            except Exception:
+            except Exception as e:
+                import logging
+                logging.warning(f"加载 TTS URL 失败，使用默认值: {e}")
                 config.base_url = "http://localhost:5001"  # type: ignore[misc]
         self.config = config
         self.sample_rate = 22050  # 默认采样率，会从服务端获取
-        self._session = requests.Session()
+        self._session: Optional[requests.Session] = None
+
+    def _get_session(self) -> requests.Session:
+        """获取或创建 HTTP Session（懒初始化）"""
+        if self._session is None:
+            self._session = requests.Session()
+        return self._session
+
+    def close(self):
+        """关闭 HTTP Session，释放资源"""
+        if self._session is not None:
+            self._session.close()
+            self._session = None
+
+    def __del__(self):
+        """析构时关闭 Session"""
+        self.close()
+
+    def __enter__(self):
+        """上下文管理器入口"""
+        return self
+
+    def __exit__(self, *args):
+        """上下文管理器出口"""
+        self.close()
     
     @property
     def base_url(self) -> str:
@@ -79,7 +107,7 @@ class RemoteTTSClient:
     def health_check(self) -> bool:
         """检查 TTS 服务是否可用"""
         try:
-            resp = self._session.get(
+            resp = self._get_session().get(
                 f"{self.base_url}/health",
                 timeout=5
             )
@@ -98,7 +126,7 @@ class RemoteTTSClient:
             (audio_data, sample_rate) 或 None
         """
         try:
-            resp = self._session.post(
+            resp = self._get_session().post(
                 f"{self.base_url}/tts/generate",
                 json={
                     "text": text,
@@ -157,7 +185,7 @@ class RemoteTTSClient:
 
         try:
             # 1. 入队任务
-            resp = self._session.post(
+            resp = self._get_session().post(
                 f"{self.base_url}/tts/enqueue",
                 json={
                     "text": text,
@@ -200,7 +228,7 @@ class RemoteTTSClient:
                         log.tts(f"[远程TTS] 等待中... 已收 {received_count} 段，期望下一段 {expected_next}，已等待 {time.time() - t_start:.1f}s")
                         last_log_time = time.time()
 
-                    resp = self._session.get(
+                    resp = self._get_session().get(
                         f"{self.base_url}/tts/dequeue",
                         params={"job_id": job_id, "timeout": dequeue_timeout},
                         timeout=dequeue_timeout + 5
