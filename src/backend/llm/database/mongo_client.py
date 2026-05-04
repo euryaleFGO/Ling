@@ -1,5 +1,5 @@
 """
-MongoDB 客户端管理模块
+MongoDB 客户端管理模块（支持优雅降级）
 """
 from pymongo import MongoClient
 from pymongo.database import Database
@@ -13,19 +13,20 @@ logger = logging.getLogger(__name__)
 
 
 class MongoDBClient:
-    """MongoDB 客户端单例"""
-    
+    """MongoDB 客户端单例（支持优雅降级）"""
+
     _instance: Optional['MongoDBClient'] = None
     _client: Optional[MongoClient] = None
     _db: Optional[Database] = None
-    
+    _degraded_mode: bool = False  # 降级模式标志
+
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
-    
+
     def __init__(
-        self, 
+        self,
         host: str = "localhost",
         port: int = 27017,
         db_name: str = "liying_db",
@@ -37,9 +38,9 @@ class MongoDBClient:
             self._db_name = db_name
             self._uri = uri
             self._connect()
-    
+
     def _connect(self):
-        """建立数据库连接"""
+        """建立数据库连接（支持优雅降级）"""
         try:
             self._ensure_service()
             if self._uri:
@@ -49,13 +50,16 @@ class MongoDBClient:
             # 测试连接
             self._client.admin.command('ping')
             self._db = self._client[self._db_name]
+            self._degraded_mode = False
             if self._uri:
                 logger.info(f"MongoDB 连接成功: {self._uri}/{self._db_name}")
             else:
                 logger.info(f"MongoDB 连接成功: {self._host}:{self._port}/{self._db_name}")
         except Exception as e:
-            logger.error(f"MongoDB 连接失败: {e}")
-            raise
+            logger.warning(f"MongoDB 连接失败，进入降级模式: {e}")
+            self._degraded_mode = True
+            self._client = None
+            self._db = None
 
     def _ensure_service(self):
         try:
@@ -95,22 +99,40 @@ class MongoDBClient:
             pass
     
     @property
-    def db(self) -> Database:
-        """获取数据库实例"""
-        if self._db is None:
+    def db(self) -> Optional[Database]:
+        """获取数据库实例（降级模式下返回 None）"""
+        if self._db is None and not self._degraded_mode:
             self._connect()
         return self._db
-    
+
     @property
-    def client(self) -> MongoClient:
-        """获取客户端实例"""
-        if self._client is None:
+    def client(self) -> Optional[MongoClient]:
+        """获取客户端实例（降级模式下返回 None）"""
+        if self._client is None and not self._degraded_mode:
             self._connect()
         return self._client
-    
+
+    @property
+    def is_degraded(self) -> bool:
+        """是否处于降级模式"""
+        return self._degraded_mode
+
     def get_collection(self, name: str):
-        """获取集合"""
-        return self.db[name]
+        """获取集合（降级模式下返回 None）"""
+        db = self.db
+        if db is None:
+            return None
+        return db[name]
+
+    def retry_connection(self) -> bool:
+        """重试连接（用于从降级模式恢复）"""
+        if not self._degraded_mode and self._client is not None:
+            return True
+
+        logger.info("重试 MongoDB 连接...")
+        self._degraded_mode = False
+        self._connect()
+        return not self._degraded_mode
     
     def close(self):
         """关闭连接"""
