@@ -123,7 +123,13 @@ def export_cosyvoice2_vllm(model, model_path, device):
     model.llm.model.config.tie_word_embeddings = False
     model.llm.model.config.use_bias = True
     model.llm.model.save_pretrained(model_path)
-    os.system('sed -i s@Qwen2ForCausalLM@CosyVoice2ForCausalLM@g {}/config.json'.format(os.path.abspath(model_path)))
+    # 修复安全漏洞：使用纯 Python 替换 os.system() 命令注入
+    config_path = os.path.join(os.path.abspath(model_path), "config.json")
+    with open(config_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    content = content.replace("Qwen2ForCausalLM", "CosyVoice2ForCausalLM")
+    with open(config_path, "w", encoding="utf-8") as f:
+        f.write(content)
     model.llm.model.config.vocab_size = tmp_vocab_size
     model.llm.model.config.tie_word_embeddings = tmp_tie_embedding
     model.llm.model.set_input_embeddings(embed_tokens)

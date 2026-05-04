@@ -419,9 +419,18 @@ class Launcher:
                     import asyncio
                     # 在事件循环中取消当前 turn
                     try:
+                        # 获取事件循环：优先使用 _loop，否则尝试获取运行中的循环
+                        loop = None
+                        if hasattr(self._conversation_manager, '_loop'):
+                            loop = self._conversation_manager._loop
+                        else:
+                            try:
+                                loop = asyncio.get_running_loop()
+                            except RuntimeError:
+                                loop = asyncio.get_event_loop()
                         asyncio.run_coroutine_threadsafe(
                             self._conversation_manager.cancel_current_turn(),
-                            self._conversation_manager._loop if hasattr(self._conversation_manager, '_loop') else asyncio.get_event_loop()
+                            loop
                         )
                     except Exception as e:
                         log.debug(f"取消对话时出错: {e}")

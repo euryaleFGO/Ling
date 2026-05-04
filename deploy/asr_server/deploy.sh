@@ -18,7 +18,7 @@ LOG_DIR="$DEPLOY_DIR/logs"
 PID_FILE="$DEPLOY_DIR/asr_server.pid"
 LOG_FILE="$LOG_DIR/asr_server.log"
 PORT=5002
-HOST="0.0.0.0"
+HOST="127.0.0.1"
 WORKERS=4
 
 # 打印信息

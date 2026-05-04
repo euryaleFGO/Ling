@@ -145,3 +145,13 @@ config/*.json
 
 # Worktrees
 .worktrees/
+
+# 临时目录
+tmp/
+
+# Lock files (except requirements.lock)
+*.lock
+!requirements.lock
+
+# Claude Code
+.claude/

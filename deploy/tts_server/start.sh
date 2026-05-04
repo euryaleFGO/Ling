@@ -2,7 +2,7 @@
 # TTS 服务启动脚本
 
 # 配置
-HOST=${TTS_HOST:-0.0.0.0}
+HOST=${TTS_HOST:-127.0.0.1}
 PORT=${TTS_PORT:-5001}
 MODEL_PATH=${COSYVOICE_MODEL_PATH:-./models/TTS/CosyVoice2-0.5B}
 

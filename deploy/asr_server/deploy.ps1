@@ -15,7 +15,7 @@ $LogDir = Join-Path $DeployDir "logs"
 $PidFile = Join-Path $DeployDir "asr_server.pid"
 $LogFile = Join-Path $LogDir "asr_server.log"
 $Port = 5002
-$Host = "0.0.0.0"
+$Host = "127.0.0.1"
 $Workers = 4
 
 # 颜色输出

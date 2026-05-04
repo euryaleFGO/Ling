@@ -264,42 +264,50 @@ class ConfigManager:
         return config
     
     def _validate_config(self):
-        """验证配置参数"""
-        errors = []
-        
+        """验证配置参数（返回警告而非抛异常，提高系统容错性）"""
+        warnings = []
+
         # 验证 ASR 配置
         if self.config.asr.stream_profile not in ["low_latency", "balanced", "accuracy"]:
-            errors.append(f"无效的 ASR stream_profile: {self.config.asr.stream_profile}")
-        
+            warnings.append(f"无效的 ASR stream_profile: {self.config.asr.stream_profile}，将使用默认值 'balanced'")
+            self.config.asr.stream_profile = "balanced"
+
         # 验证 TTS 配置
         if self.config.tts.cache_size < 0:
-            errors.append(f"无效的 TTS cache_size: {self.config.tts.cache_size}")
-        
+            warnings.append(f"无效的 TTS cache_size: {self.config.tts.cache_size}，将使用默认值 100")
+            self.config.tts.cache_size = 100
+
         if self.config.tts.max_workers < 1:
-            errors.append(f"无效的 TTS max_workers: {self.config.tts.max_workers}")
-        
+            warnings.append(f"无效的 TTS max_workers: {self.config.tts.max_workers}，将使用默认值 2")
+            self.config.tts.max_workers = 2
+
         # 验证打断配置
         if self.config.interrupt.context_mode not in ["reset", "continue"]:
-            errors.append(f"无效的 interrupt context_mode: {self.config.interrupt.context_mode}")
-        
+            warnings.append(f"无效的 interrupt context_mode: {self.config.interrupt.context_mode}，将使用默认值 'reset'")
+            self.config.interrupt.context_mode = "reset"
+
         if self.config.interrupt.min_speech_ms < 0:
-            errors.append(f"无效的 interrupt min_speech_ms: {self.config.interrupt.min_speech_ms}")
-        
+            warnings.append(f"无效的 interrupt min_speech_ms: {self.config.interrupt.min_speech_ms}，将使用默认值 500")
+            self.config.interrupt.min_speech_ms = 500
+
         # 验证音频配置
         if self.config.audio.vad_backend not in ["rms", "silero"]:
-            errors.append(f"无效的 audio vad_backend: {self.config.audio.vad_backend}")
-        
+            warnings.append(f"无效的 audio vad_backend: {self.config.audio.vad_backend}，将使用默认值 'rms'")
+            self.config.audio.vad_backend = "rms"
+
         if self.config.audio.vad_preset not in ["sensitive", "balanced", "aggressive"]:
-            errors.append(f"无效的 audio vad_preset: {self.config.audio.vad_preset}")
-        
+            warnings.append(f"无效的 audio vad_preset: {self.config.audio.vad_preset}，将使用默认值 'balanced'")
+            self.config.audio.vad_preset = "balanced"
+
         # 验证性能监控配置
         if self.config.performance.export_format not in ["json", "csv"]:
-            errors.append(f"无效的 performance export_format: {self.config.performance.export_format}")
-        
-        if errors:
-            error_msg = "\n".join(errors)
-            log.error(f"配置验证失败:\n{error_msg}")
-            raise ValueError(f"配置验证失败:\n{error_msg}")
+            warnings.append(f"无效的 performance export_format: {self.config.performance.export_format}，将使用默认值 'json'")
+            self.config.performance.export_format = "json"
+
+        # 输出警告但不抛异常
+        if warnings:
+            warning_msg = "\n".join(warnings)
+            log.warning(f"配置验证警告（已自动修正）:\n{warning_msg}")
     
     def save(self, config: Optional[SystemConfig] = None):
         """

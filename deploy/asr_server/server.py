@@ -703,7 +703,7 @@ if __name__ == '__main__':
     import argparse
     
     parser = argparse.ArgumentParser(description='ASR 服务器')
-    parser.add_argument('--host', default='0.0.0.0', help='监听地址')
+    parser.add_argument('--host', default='127.0.0.1', help='监听地址 (默认: 127.0.0.1，仅本地访问)')
     parser.add_argument('--port', type=int, default=5002, help='监听端口')
     parser.add_argument('--debug', action='store_true', help='调试模式')
     

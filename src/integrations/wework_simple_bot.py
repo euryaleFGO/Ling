@@ -290,7 +290,7 @@ def main():
     parser.add_argument("--corp-id", help="企业 ID (Bot ID)")
     parser.add_argument("--corp-secret", help="应用密钥 (Secret)")
     parser.add_argument("--agent-id", default="1000002", help="应用 ID")
-    parser.add_argument("--host", default="0.0.0.0", help="服务器地址")
+    parser.add_argument("--host", default="127.0.0.1", help="服务器地址 (默认: 127.0.0.1，仅本地访问)")
     parser.add_argument("--port", type=int, default=8080, help="服务器端口")
     
     args = parser.parse_args()

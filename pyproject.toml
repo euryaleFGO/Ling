@@ -1,0 +1,98 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "liying"
+version = "0.1.0"
+description = "Emotionally companionable 2D digital human interaction system"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+    {name = "李昆伦"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+dependencies = [
+    # 核心
+    "openai>=1.0",
+    "pydantic",
+    "python-dotenv",
+    # 数据库
+    "pymongo>=4.0",
+    "chromadb>=0.4",
+    # 音频
+    "sounddevice>=0.4",
+    "numpy",
+    "edge-tts",
+    "requests",
+    # Web
+    "flask",
+    "flask-cors",
+    "websockets",
+    # GUI
+    "pyqt6",
+    # 图像
+    "Pillow",
+    # 浏览器自动化
+    "playwright",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "ruff", "mypy"]
+tts = [
+    "torchaudio",
+    "onnxruntime",
+    "modelscope",
+    "hyperpyyaml",
+    "einops",
+    "omegaconf",
+    "tqdm",
+    "scipy",
+    "librosa",
+    "soundfile",
+]
+asr = ["funasr", "transformers"]
+vision = ["transformers", "opencv-python"]
+screen = ["pyautogui"]
+
+[project.urls]
+Homepage = "https://github.com/your-repo/liying"
+Repository = "https://github.com/your-repo/liying"
+"Bug Tracker" = "https://github.com/your-repo/liying/issues"
+
+[project.scripts]
+liying = "main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+exclude = ["__pycache__", "logs*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.yaml", "*.txt", "*.model", "*.onnx", "*.moc3", "*.png"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "slow: marks tests as slow",
+    "integration: marks tests as integration tests",
+]

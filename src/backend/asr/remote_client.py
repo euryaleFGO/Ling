@@ -52,14 +52,18 @@ class RemoteASRClient:
                 from core.settings import AppSettings
                 s = AppSettings.load()
                 config = RemoteASRConfig(base_url=s.remote_asr_url)
-            except Exception:
+            except Exception as e:
+                import logging
+                logging.warning(f"加载 ASR 配置失败，使用默认值: {e}")
                 config = RemoteASRConfig(base_url="http://localhost:5002")
         elif not config.base_url:
             try:
                 from core.settings import AppSettings
                 s = AppSettings.load()
                 config.base_url = s.remote_asr_url  # type: ignore[misc]
-            except Exception:
+            except Exception as e:
+                import logging
+                logging.warning(f"加载 ASR URL 失败，使用默认值: {e}")
                 config.base_url = "http://localhost:5002"  # type: ignore[misc]
         self.config = config
         self._session = requests.Session()

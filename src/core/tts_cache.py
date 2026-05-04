@@ -6,7 +6,8 @@ TTS 缓存模块
 """
 
 import hashlib
-import pickle
+import json
+import base64
 from collections import OrderedDict
 from pathlib import Path
 from typing import Optional, Tuple, List
@@ -104,12 +105,19 @@ class TTSCache:
         
         # 再查磁盘缓存
         if self.enable_disk_cache and self.cache_dir:
-            cache_file = self.cache_dir / f"{key}.pkl"
+            cache_file = self.cache_dir / f"{key}.json"
             if cache_file.exists():
                 try:
-                    with open(cache_file, 'rb') as f:
-                        data = pickle.load(f)
-                    
+                    with open(cache_file, 'r', encoding='utf-8') as f:
+                        cache_data = json.load(f)
+
+                    # 从 JSON 反序列化音频数据
+                    audio_array = np.frombuffer(
+                        base64.b64decode(cache_data["audio_base64"]),
+                        dtype=np.dtype(cache_data["dtype"])
+                    )
+                    data = (audio_array, cache_data["sample_rate"], cache_data.get("metadata", {}))
+
                     # 加载到内存缓存
                     self._put_memory(key, data)
                     self._hits += 1
@@ -152,9 +160,16 @@ class TTSCache:
         # 放入磁盘缓存
         if self.enable_disk_cache and self.cache_dir:
             try:
-                cache_file = self.cache_dir / f"{key}.pkl"
-                with open(cache_file, 'wb') as f:
-                    pickle.dump(data, f)
+                # 序列化为 JSON（安全，无反序列化漏洞）
+                cache_data = {
+                    "audio_base64": base64.b64encode(audio.tobytes()).decode(),
+                    "sample_rate": sample_rate,
+                    "dtype": str(audio.dtype),
+                    "metadata": metadata or {}
+                }
+                cache_file = self.cache_dir / f"{key}.json"
+                with open(cache_file, 'w', encoding='utf-8') as f:
+                    json.dump(cache_data, f)
                 log.debug(f"[TTS 缓存] 已保存到磁盘: {text[:20]}...")
             except Exception as e:
                 log.warn(f"[TTS 缓存] 磁盘缓存保存失败: {e}")
@@ -248,7 +263,7 @@ class TTSCache:
     def clear_disk_cache(self):
         """清空磁盘缓存"""
         if self.enable_disk_cache and self.cache_dir and self.cache_dir.exists():
-            for cache_file in self.cache_dir.glob("*.pkl"):
+            for cache_file in self.cache_dir.glob("*.json"):
                 try:
                     cache_file.unlink()
                 except Exception as e:

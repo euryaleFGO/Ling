@@ -157,3 +157,22 @@ class _Logger:
 
 
 log = _Logger()
+
+
+def get_logger(name: str, level: int = logging.DEBUG) -> logging.Logger:
+    """
+    日志工厂函数（统一日志入口）
+
+    Args:
+        name: 日志名称（模块名）
+        level: 日志级别
+
+    Returns:
+        配置好的 logger 实例
+
+    Usage:
+        from core.log import get_logger
+        logger = get_logger(__name__)
+        logger.info("消息")
+    """
+    return _get_logger(name, level)

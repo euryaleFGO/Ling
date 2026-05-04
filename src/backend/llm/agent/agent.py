@@ -92,6 +92,12 @@ class Agent:
         self._task_lock = threading.Lock()
         self._on_tool_status: Optional[Callable[[str, str, str], None]] = None  # callback(tool_name, status, message)
         self._interrupted = False
+
+        # 对话锁（保护 chat() 方法的线程安全）
+        self._chat_lock = threading.Lock()
+
+        # 打断标志（使用 threading.Event 保证线程安全）
+        self._interrupted = threading.Event()
     
     def _setup_tools(self):
         """初始化工具"""
@@ -175,8 +181,8 @@ class Agent:
         if self._on_tool_status:
             try:
                 self._on_tool_status(tool_name, status, message)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"工具状态回调失败: {e}")
 
     def _next_task_id(self) -> str:
         """生成下一个任务 ID"""
@@ -186,8 +192,12 @@ class Agent:
 
     def interrupt(self):
         """打断当前操作"""
-        self._interrupted = True
+        self._interrupted.set()
         logger.info("Agent: 用户请求打断")
+
+    def clear_interrupt(self):
+        """清除打断标志"""
+        self._interrupted.clear()
 
     def get_pending_results(self) -> List[Dict]:
         """获取后台任务的完成结果（非阻塞）"""
@@ -434,8 +444,19 @@ class Agent:
 
         支持工具调用的完整流程，耗时工具会后台执行
         """
+        with self._chat_lock:
+            return self._chat_inner(message, stream)
+
+    def _chat_inner(
+        self,
+        message: str,
+        stream: bool = True
+    ) -> Generator[str, None, None]:
+        """
+        内部对话逻辑（线程安全，由 _chat_lock 保护）
+        """
         # 重置打断标志
-        self._interrupted = False
+        self._interrupted.clear()
 
         # 确保有活跃会话
         if not self._context_manager.session_id:
@@ -464,8 +485,8 @@ class Agent:
         logger.info(f"👤 用户消息: {message[:50]}{'...' if len(message) > 50 else ''}")
 
         while tool_call_count < self.MAX_TOOL_CALLS:
-            # 检查是否被打断
-            if self._interrupted:
+            # 检查是否被打断（线程安全）
+            if self._interrupted.is_set():
                 yield "\n[已打断]"
                 return
 

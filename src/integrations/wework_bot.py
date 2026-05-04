@@ -224,11 +224,11 @@ class WeWorkBot:
         # 暂时简单实现
         pass
     
-    def run(self, host: str = "0.0.0.0", port: int = 8080, debug: bool = False):
+    def run(self, host: str = "127.0.0.1", port: int = 8080, debug: bool = False):
         """启动 Flask 服务器"""
         logger.info(f"启动企业微信机器人服务器: http://{host}:{port}")
         logger.info("Webhook 地址: http://{host}:{port}/webhook")
-        
+
         self.app.run(
             host=host,
             port=port,
@@ -240,9 +240,9 @@ class WeWorkBot:
 def main():
     """主函数"""
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="企业微信机器人服务")
-    parser.add_argument("--host", default="0.0.0.0", help="服务器地址")
+    parser.add_argument("--host", default="127.0.0.1", help="服务器地址 (默认: 127.0.0.1，仅本地访问)")
     parser.add_argument("--port", type=int, default=8080, help="服务器端口")
     parser.add_argument("--debug", action="store_true", help="调试模式")
     parser.add_argument("--webhook-key", help="企业微信 Webhook Key")

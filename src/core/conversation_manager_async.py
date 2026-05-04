@@ -13,6 +13,7 @@
 import asyncio
 import contextlib
 import re
+import threading
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -270,6 +271,9 @@ class AsyncConversationManager:
 
         # 文字输入队列（由 tray 对话框 / message_server 投递）
         self._user_text_queue: asyncio.Queue | None = None
+
+        # 运行状态（使用 threading.Event 保证线程安全）
+        self._running = threading.Event()
     
     # ============================================================
     #  初始化方法（从同步版本迁移）
@@ -920,24 +924,27 @@ class AsyncConversationManager:
         if not self._agent:
             yield "抱歉，AI 服务未初始化"
             return
-        
+
         # 创建队列用于线程间通信
         queue: asyncio.Queue[str | None] = asyncio.Queue()
         exception_holder = [None]
-        
+
+        # 捕获当前事件循环引用（修复 Python 3.12+ 兼容性问题）
+        loop = asyncio.get_running_loop()
+
         def _sync_generator():
             """在线程中运行同步生成器"""
             try:
                 for chunk in self._agent.chat(user_text, stream=True):
-                    # 使用 call_soon_threadsafe 将数据放入队列
-                    asyncio.get_event_loop().call_soon_threadsafe(queue.put_nowait, chunk)
+                    # 使用捕获的 loop 引用调用 call_soon_threadsafe
+                    loop.call_soon_threadsafe(queue.put_nowait, chunk)
             except Exception as e:
                 log.error(f"Agent 流式生成错误: {e}")
                 exception_holder[0] = e
             finally:
                 # 发送结束信号
-                asyncio.get_event_loop().call_soon_threadsafe(queue.put_nowait, None)
-        
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
         # 在线程池中启动同步生成器
         asyncio.create_task(asyncio.to_thread(_sync_generator))
         
@@ -1058,11 +1065,15 @@ class AsyncConversationManager:
 
     def submit_user_text(self, text: str):
         """从任意线程投递用户文字到对话循环（线程安全）"""
-        if self._user_text_queue is not None:
+        # 先捕获引用，避免竞态条件
+        queue = self._user_text_queue
+        if queue is not None:
             try:
-                self._user_text_queue.put_nowait(text)
-            except Exception:
-                pass
+                queue.put_nowait(text)
+            except asyncio.QueueFull:
+                log.warning("用户文本队列已满，丢弃消息")
+            except Exception as e:
+                log.warning(f"投递用户文本失败: {e}")
     
     @staticmethod
     def _merge_streaming_pair(base: str, incoming: str) -> str:
@@ -1174,14 +1185,14 @@ class AsyncConversationManager:
     async def run_async(self):
         """异步主循环"""
         log.info("\n异步对话系统已启动\n")
-        self._running = True
+        self._running.set()
 
         # 文字输入模式：创建队列供外部投递
         if self.config.use_text_input:
             self._user_text_queue = asyncio.Queue()
             log.info("[文字输入] 队列已创建，等待外部投递...")
-        
-        while self._running:
+
+        while self._running.is_set():
             try:
                 # 监听用户输入
                 self._set_state(ConversationState.LISTENING)
@@ -1282,7 +1293,7 @@ class AsyncConversationManager:
     
     def stop_sync(self):
         """停止对话（同步版本，用于从非异步上下文调用）"""
-        self._running = False
+        self._running.clear()
         self._user_text_queue = None
         
         # 停止音频设备
