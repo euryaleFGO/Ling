@@ -34,60 +34,17 @@ from core.performance_metrics import (
     PerformanceMonitor,
     ASRMetrics,
     TTSMetrics,
-    TurnMetrics,
     InterruptMetrics,
 )
 from core.tts_cache import TTSCache
 from core.config_manager import SystemConfig, get_config_manager
 
+# 导入 conversation 模块
+from core.conversation import ConversationState, ConversationConfig, TurnMetrics
+from core.conversation.sentence_splitter import pop_sentence as _pop_sentence
+
 # 添加路径
 project_root = Path(__file__).parent.parent.parent
-
-
-class ConversationState(Enum):
-    """对话状态"""
-    IDLE = "idle"
-    LISTENING = "listening"
-    PROCESSING = "processing"
-    SPEAKING = "speaking"
-    PAUSED = "paused"
-
-
-# ============================================================
-#  句子切分（学习 Yione）
-# ============================================================
-
-# 硬切：句号、问号、感叹号、换行
-_SENTENCE_END = re.compile(r"[。！？.!?\n]")
-# 最小句子长度（避免单字污染 TTS）
-_MIN_SENTENCE_CHARS = 2
-# 软切：超过 18 字在逗号/分号处切
-_SOFT_BREAK = re.compile(r"[，、；,;]")
-_SOFT_BREAK_AFTER = 18
-
-
-def _pop_sentence(buf: str) -> tuple[str | None, str]:
-    """从 buf 头部切出一句话；切不出来就原样返回。
-    
-    硬切：。！？.!?\\n
-    软切：buf 长度超过 _SOFT_BREAK_AFTER 时在逗号/分号处切
-    """
-    match = _SENTENCE_END.search(buf)
-    if match is not None:
-        end = match.end()
-        sentence = buf[:end]
-        if len(sentence.strip()) < _MIN_SENTENCE_CHARS:
-            return None, buf
-        return sentence, buf[end:]
-
-    if len(buf) >= _SOFT_BREAK_AFTER:
-        soft = _SOFT_BREAK.search(buf)
-        if soft is not None:
-            end = soft.end()
-            sentence = buf[:end]
-            if len(sentence.strip()) >= _MIN_SENTENCE_CHARS:
-                return sentence, buf[end:]
-    return None, buf
 
 
 # ============================================================
