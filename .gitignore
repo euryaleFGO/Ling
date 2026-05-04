@@ -88,7 +88,7 @@ audio_output/
 *.ogg
 
 # 环境变量文件
-.env
+*.env
 .env.local
 .env.*.local
 
@@ -142,3 +142,6 @@ config/*.json
 # Git
 .git/
 .gitignore.bak
+
+# Worktrees
+.worktrees/
