@@ -1,0 +1,20 @@
+FROM python:3.12-slim AS base
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libsndfile1 ffmpeg curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY deploy/asr_server/requirements.txt /app/requirements.txt 2>/dev/null || true
+RUN pip install --no-cache-dir flask flask-cors requests numpy \
+    funasr transformers 2>/dev/null || \
+    pip install --no-cache-dir flask flask-cors requests numpy
+
+COPY deploy/asr_server/ /app/
+
+ENV ASR_HOST=0.0.0.0
+ENV ASR_PORT=5002
+EXPOSE 5002
+
+CMD ["python", "server.py"]

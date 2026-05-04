@@ -1,0 +1,68 @@
+services:
+  mongodb:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  tts-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.tts
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./models/tts:/app/models
+    environment:
+      - TTS_HOST=0.0.0.0
+      - TTS_PORT=5001
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  asr-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.asr
+    ports:
+      - "5002:5002"
+    volumes:
+      - ./models/asr:/app/models
+    environment:
+      - ASR_HOST=0.0.0.0
+      - ASR_PORT=5002
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  liying:
+    build: .
+    ports:
+      - "8765:8765"
+    environment:
+      - LIYING_LLM_API_KEY=${LIYING_LLM_API_KEY}
+      - LIYING_LLM_BASE_URL=${LIYING_LLM_BASE_URL}
+      - LIYING_LLM_MODEL=${LIYING_LLM_MODEL}
+      - REMOTE_TTS_URL=http://tts-server:5001
+      - REMOTE_ASR_URL=http://asr-server:5002
+      - MONGODB_URI=mongodb://mongodb:27017
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      tts-server:
+        condition: service_healthy
+      asr-server:
+        condition: service_healthy
+
+volumes:
+  mongo_data:
