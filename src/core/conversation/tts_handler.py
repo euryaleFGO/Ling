@@ -92,21 +92,20 @@ class TTSHandler:
 
             model_dir = self.config.tts_model_dir
             if not model_dir:
-                default_paths = [
-                    project_root / "models" / "TTS" / "CosyVoice2-0.5B",
-                ]
                 try:
-                    from core.settings import AppSettings
-                    s = AppSettings.load()
-                    if s.tts_model_dir.exists():
-                        default_paths.insert(0, s.tts_model_dir)
+                    from core.config_manager import get_config_manager
+                    cfg = get_config_manager().config
+                    if cfg.tts.model_dir:
+                        model_dir = cfg.tts.model_dir
                 except Exception:
-                    logger.debug("Failed to load TTS model dir from AppSettings")
-                    pass
-                for p in default_paths:
-                    if p.exists():
-                        model_dir = str(p)
-                        break
+                    logger.debug("Failed to load TTS model dir from ConfigManager")
+                if not model_dir:
+                    for p in [
+                        project_root / "models" / "TTS" / "CosyVoice2-0.5B",
+                    ]:
+                        if p.exists():
+                            model_dir = str(p)
+                            break
 
             if model_dir and Path(model_dir).exists():
                 self._tts = CosyvoiceRealTimeTTS(model_path=model_dir)

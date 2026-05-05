@@ -140,15 +140,15 @@ class MainWindow(QMainWindow):
         try:
             expected_port = 27017
             try:
-                from core.settings import AppSettings
-                s = AppSettings.load()
-                if s.mongodb_uri and "://" in s.mongodb_uri:
-                    tail = s.mongodb_uri.split("://", 1)[1]
+                from core.config_manager import get_config_manager
+                cfg = get_config_manager().config
+                if cfg.mongodb.uri and "://" in cfg.mongodb.uri:
+                    tail = cfg.mongodb.uri.split("://", 1)[1]
                     host_port = tail.split("/", 1)[0]
                     if ":" in host_port:
                         expected_port = int(host_port.rsplit(":", 1)[1])
             except Exception:
-                logger.debug("Failed to parse MongoDB port from settings, using default 27017")
+                logger.debug("Failed to parse MongoDB port from ConfigManager, using default 27017")
                 expected_port = 27017
 
             # 检查进程

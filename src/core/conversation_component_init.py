@@ -142,13 +142,6 @@ class ComponentInitMixin:
 
             model_dir = self.config.asr.model_dir
             if not model_dir:
-                try:
-                    from core.settings import AppSettings
-                    s = AppSettings.load()
-                    if s.asr_model_dir.exists():
-                        model_dir = str(s.asr_model_dir)
-                except Exception:
-                    logger.debug("Failed to load ASR model dir from AppSettings")
                 for p in [
                     _PROJECT_ROOT / "models" / "ASR" / "paraformer-zh-streaming",
                 ]:
@@ -158,19 +151,14 @@ class ComponentInitMixin:
 
             vad_model = None
             if self.config.audio.use_vad:
-                try:
-                    from core.settings import AppSettings
-                    s = AppSettings.load()
-                    if s.asr_vad_dir.exists():
-                        vad_model = str(s.asr_vad_dir)
-                except Exception:
-                    logger.debug("Failed to load VAD model dir from AppSettings")
-                for p in [
-                    _PROJECT_ROOT / "models" / "ASR" / "fsmn-vad",
-                ]:
-                    if p.exists():
-                        vad_model = str(p)
-                        break
+                vad_model = self.config.asr.vad_model_dir
+                if not vad_model:
+                    for p in [
+                        _PROJECT_ROOT / "models" / "ASR" / "fsmn-vad",
+                    ]:
+                        if p.exists():
+                            vad_model = str(p)
+                            break
                 vad_model = vad_model or "fsmn-vad"
 
             if model_dir and Path(model_dir).exists():
@@ -229,17 +217,9 @@ class ComponentInitMixin:
 
             model_dir = self.config.tts.model_dir
             if not model_dir:
-                default_paths = [
+                for p in [
                     _PROJECT_ROOT / "models" / "TTS" / "CosyVoice2-0.5B",
-                ]
-                try:
-                    from core.settings import AppSettings
-                    s = AppSettings.load()
-                    if s.tts_model_dir.exists():
-                        default_paths.insert(0, s.tts_model_dir)
-                except Exception:
-                    logger.debug("Failed to load TTS model dir from AppSettings")
-                for p in default_paths:
+                ]:
                     if p.exists():
                         model_dir = str(p)
                         break

@@ -165,12 +165,12 @@ def get_mongo_client(
     if _mongo_client is None:
         if uri is None:
             try:
-                from core.settings import AppSettings
-                s = AppSettings.load()
-                uri = s.mongodb_uri
-                db_name = s.mongodb_db
+                from core.config_manager import get_config_manager
+                cfg = get_config_manager().config
+                uri = cfg.mongodb.uri
+                db_name = cfg.mongodb.db_name
             except Exception:
-                logger.debug("Failed to load MongoDB settings from AppSettings, using provided defaults", exc_info=True)
+                logger.debug("Failed to load MongoDB settings from ConfigManager, using provided defaults", exc_info=True)
         _mongo_client = MongoDBClient(host, port, db_name, uri=uri)
     return _mongo_client
 

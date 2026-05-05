@@ -50,11 +50,13 @@ class SpeakerPage(QWidget):
         self.matcha_path = self.tts_root / "third_party" / "Matcha-TTS"
 
         try:
-            from core.settings import AppSettings
-            s = AppSettings.load()
-            self.model_dir = s.tts_model_dir
+            from core.config_manager import get_config_manager
+            cfg = get_config_manager().config
+            self.model_dir = Path(cfg.tts.model_dir) if cfg.tts.model_dir else None
         except Exception:
-            logger.warning("Failed to load TTS model directory from AppSettings, using default path")
+            logger.warning("Failed to load TTS model directory from ConfigManager, using default path")
+            self.model_dir = None
+        if not self.model_dir:
             self.model_dir = self.project_root / "models" / "TTS" / "CosyVoice2-0.5B"
         self.spk2info_path = self.model_dir / "spk2info.pt"
 

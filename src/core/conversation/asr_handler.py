@@ -110,36 +110,36 @@ class ASRHandler:
             model_dir = self.config.asr_model_dir
             if not model_dir:
                 try:
-                    from core.settings import AppSettings
-                    s = AppSettings.load()
-                    if s.asr_model_dir.exists():
-                        model_dir = str(s.asr_model_dir)
+                    from core.config_manager import get_config_manager
+                    cfg = get_config_manager().config
+                    if cfg.asr.model_dir:
+                        model_dir = cfg.asr.model_dir
                 except Exception:
-                    logger.debug("Failed to load ASR model dir from AppSettings")
-                    pass
-                for p in [
-                    project_root / "models" / "ASR" / "paraformer-zh-streaming",
-                ]:
-                    if p.exists():
-                        model_dir = str(p)
-                        break
+                    logger.debug("Failed to load ASR model dir from ConfigManager")
+                if not model_dir:
+                    for p in [
+                        project_root / "models" / "ASR" / "paraformer-zh-streaming",
+                    ]:
+                        if p.exists():
+                            model_dir = str(p)
+                            break
 
             vad_model = None
             if self.config.use_vad:
                 try:
-                    from core.settings import AppSettings
-                    s = AppSettings.load()
-                    if s.asr_vad_dir.exists():
-                        vad_model = str(s.asr_vad_dir)
+                    from core.config_manager import get_config_manager
+                    cfg = get_config_manager().config
+                    if cfg.asr.vad_model_dir:
+                        vad_model = cfg.asr.vad_model_dir
                 except Exception:
-                    logger.debug("Failed to load VAD model dir from AppSettings")
-                    pass
-                for p in [
-                    project_root / "models" / "ASR" / "fsmn-vad",
-                ]:
-                    if p.exists():
-                        vad_model = str(p)
-                        break
+                    logger.debug("Failed to load VAD model dir from ConfigManager")
+                if not vad_model:
+                    for p in [
+                        project_root / "models" / "ASR" / "fsmn-vad",
+                    ]:
+                        if p.exists():
+                            vad_model = str(p)
+                            break
                 vad_model = vad_model or "fsmn-vad"
 
             if model_dir and Path(model_dir).exists():

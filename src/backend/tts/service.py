@@ -35,7 +35,12 @@ CORS(app)  # 允许跨域请求
 # TTS 引擎
 tts_engine = None
 # 默认路径（可通过环境变量或配置文件修改）
-DEFAULT_MODEL_PATH = os.getenv('COSYVOICE_MODEL_PATH', os.path.join(BASE_DIR, '..', '..', '..', '..', 'Model', 'CosyVoice2-0.5B'))
+try:
+    from core.config_manager import get_config_manager
+    _cfg = get_config_manager().config
+    DEFAULT_MODEL_PATH = _cfg.tts.model_dir or os.path.join(BASE_DIR, '..', '..', '..', '..', 'Model', 'CosyVoice2-0.5B')
+except Exception:
+    DEFAULT_MODEL_PATH = os.getenv('COSYVOICE_MODEL_PATH', os.path.join(BASE_DIR, '..', '..', '..', '..', 'Model', 'CosyVoice2-0.5B'))
 DEFAULT_REF_AUDIO = os.getenv('COSYVOICE_REF_AUDIO', os.path.join(BASE_DIR, '..', '..', '..', '..', 'Model', 'zjj.wav'))
 
 def init_tts(model_path: str = None, ref_audio: str = None):
