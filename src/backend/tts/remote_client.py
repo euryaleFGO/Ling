@@ -58,23 +58,14 @@ class RemoteTTSClient:
 
     def __init__(self, config: RemoteTTSConfig = None):
         if config is None:
-            try:
-                from core.settings import AppSettings
-                s = AppSettings.load()
-                config = RemoteTTSConfig(base_url=s.remote_tts_url)
-            except Exception as e:
-                import logging
-                logging.warning(f"加载 TTS 配置失败，使用默认值: {e}")
-                config = RemoteTTSConfig(base_url="http://localhost:5001")
+            from core.config_manager import get_config_manager
+            cfg = get_config_manager().config
+            base_url = cfg.tts.remote_url
+            config = RemoteTTSConfig(base_url=base_url)
         elif not config.base_url:
-            try:
-                from core.settings import AppSettings
-                s = AppSettings.load()
-                config.base_url = s.remote_tts_url  # type: ignore[misc]
-            except Exception as e:
-                import logging
-                logging.warning(f"加载 TTS URL 失败，使用默认值: {e}")
-                config.base_url = "http://localhost:5001"  # type: ignore[misc]
+            from core.config_manager import get_config_manager
+            cfg = get_config_manager().config
+            config.base_url = cfg.tts.remote_url  # type: ignore[misc]
         self.config = config
         self.sample_rate = 22050  # 默认采样率，会从服务端获取
         self._session: Optional[requests.Session] = None
