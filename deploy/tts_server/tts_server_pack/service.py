@@ -573,7 +573,7 @@ if __name__ == '__main__':
 
     # 解析命令行参数
     parser = argparse.ArgumentParser(description='TTS 服务')
-    parser.add_argument('--host', default='0.0.0.0', help='服务地址')
+    parser.add_argument('--host', default='127.0.0.1', help='服务地址')
     parser.add_argument('--port', type=int, default=5001, help='服务端口')
     parser.add_argument('--model', default=None, help='模型路径')
     parser.add_argument('--ref-audio', default=None, help='参考音频路径')

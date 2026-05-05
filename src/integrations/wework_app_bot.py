@@ -327,7 +327,7 @@ def main():
     parser.add_argument("--secret", required=True, help="机器人 Secret")
     parser.add_argument("--token", required=True, help="回调验证 Token")
     parser.add_argument("--encoding-aes-key", help="消息加密密钥")
-    parser.add_argument("--host", default="0.0.0.0", help="服务器地址")
+    parser.add_argument("--host", default="127.0.0.1", help="服务器地址")
     parser.add_argument("--port", type=int, default=8080, help="服务器端口")
     
     args = parser.parse_args()
