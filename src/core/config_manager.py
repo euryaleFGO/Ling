@@ -52,6 +52,7 @@ class ASRConfig:
     hotword_weight: float = 10.0
     enable_model_cache: bool = True
     cache_warmup: bool = False
+    remote_url: str = ""
 
 
 @dataclass
@@ -162,6 +163,7 @@ class AdvancedConfig:
     enable_debug_logging: bool = False
     log_performance_metrics: bool = True
     auto_optimize: bool = False
+    chroma_dir: str = ""
 
 
 @dataclass
@@ -170,6 +172,21 @@ class GeneralConfig:
     use_text_input: bool = False
     user_id: str = "default_user"
     auto_listen: bool = True
+
+
+@dataclass
+class MongoDBConfig:
+    """MongoDB 配置"""
+    uri: str = "mongodb://localhost:27017"
+    db_name: str = "liying_db"
+    timeout_ms: int = 5000
+
+
+@dataclass
+class WebSocketConfig:
+    """WebSocket 消息服务配置"""
+    host: str = "localhost"
+    port: int = 8765
 
 
 @dataclass
@@ -190,6 +207,8 @@ class SystemConfig:
     speaker_recognition: SpeakerRecognitionConfig = field(default_factory=SpeakerRecognitionConfig)
     advanced: AdvancedConfig = field(default_factory=AdvancedConfig)
     general: GeneralConfig = field(default_factory=GeneralConfig)
+    mongodb: MongoDBConfig = field(default_factory=MongoDBConfig)
+    websocket: WebSocketConfig = field(default_factory=WebSocketConfig)
 
 
 # ============================================================
@@ -294,6 +313,38 @@ class ConfigManager:
             if env_uid:
                 c.general.user_id = env_uid
 
+        # MongoDB
+        if not c.mongodb.uri or c.mongodb.uri == "mongodb://localhost:27017":
+            env_uri = os.environ.get("MONGODB_URI")
+            if env_uri:
+                c.mongodb.uri = env_uri
+        if not c.mongodb.db_name or c.mongodb.db_name == "liying_db":
+            env_db = os.environ.get("MONGODB_DB")
+            if env_db:
+                c.mongodb.db_name = env_db
+
+        # WebSocket
+        if not c.websocket.host or c.websocket.host == "localhost":
+            env_host = os.environ.get("LIYING_WS_HOST")
+            if env_host:
+                c.websocket.host = env_host
+        if c.websocket.port == 8765:
+            env_port = os.environ.get("LIYING_WS_PORT")
+            if env_port:
+                c.websocket.port = int(env_port)
+
+        # ASR remote URL
+        if not c.asr.remote_url:
+            env_asr = os.environ.get("LIYING_ASR_REMOTE_URL") or os.environ.get("REMOTE_ASR_URL")
+            if env_asr:
+                c.asr.remote_url = env_asr
+
+        # Chroma
+        if not c.advanced.chroma_dir:
+            env_chroma = os.environ.get("LIYING_CHROMA_DIR")
+            if env_chroma:
+                c.advanced.chroma_dir = env_chroma
+
     def _parse_config(self, data: Dict[str, Any]) -> SystemConfig:
         config = SystemConfig()
 
@@ -357,6 +408,14 @@ class ConfigManager:
                 config.general.user_id = gen_data["user_id"]
             if "auto_listen" in gen_data:
                 config.general.auto_listen = gen_data["auto_listen"]
+
+        # MongoDB
+        if "mongodb" in data:
+            config.mongodb = _parse_sub_config(data["mongodb"], MongoDBConfig)
+
+        # WebSocket
+        if "websocket" in data:
+            config.websocket = _parse_sub_config(data["websocket"], WebSocketConfig)
 
         return config
 
@@ -428,6 +487,7 @@ class ConfigManager:
                 "hotword_weight": c.asr.hotword_weight,
                 "enable_model_cache": c.asr.enable_model_cache,
                 "cache_warmup": c.asr.cache_warmup,
+                "remote_url": c.asr.remote_url,
             },
             "tts": {
                 "model_dir": c.tts.model_dir,
@@ -506,11 +566,21 @@ class ConfigManager:
                 "enable_debug_logging": c.advanced.enable_debug_logging,
                 "log_performance_metrics": c.advanced.log_performance_metrics,
                 "auto_optimize": c.advanced.auto_optimize,
+                "chroma_dir": c.advanced.chroma_dir,
             },
             "general": {
                 "use_text_input": c.general.use_text_input,
                 "user_id": c.general.user_id,
                 "auto_listen": c.general.auto_listen,
+            },
+            "mongodb": {
+                "uri": c.mongodb.uri,
+                "db_name": c.mongodb.db_name,
+                "timeout_ms": c.mongodb.timeout_ms,
+            },
+            "websocket": {
+                "host": c.websocket.host,
+                "port": c.websocket.port,
             },
         }
 
