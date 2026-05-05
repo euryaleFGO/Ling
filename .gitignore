@@ -87,10 +87,11 @@ audio_output/
 *.mp3
 *.ogg
 
-# 环境变量文件
-*.env
+# 环境变量文件（含敏感信息）
+.env
 .env.local
 .env.*.local
+src/backend/llm/api_infer/.env
 
 # 编译文件
 frontend/Live2DPet/target/
