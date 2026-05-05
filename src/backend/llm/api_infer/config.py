@@ -1,26 +1,21 @@
 """
 LLM API 配置 — 从统一 ConfigManager 读取
 
-优先级：ConfigManager (JSON + 环境变量) > 直接环境变量
+优先级：ConfigManager (JSON + 环境变量)
 """
 
 import logging
-import os
-from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
-# 加载环境变量（兜底，确保 .env 在 ConfigManager 之前加载）
-load_dotenv()
-
 try:
     from core.config_manager import get_config_manager
-    _cfg = get_config_manager().llm
+    _cfg = get_config_manager().config.llm
     DEEPSEEK_API_KEY = _cfg.api_key
     BASE_URL = _cfg.base_url
     MODEL = _cfg.model
 except Exception as e:
-    logger.warning(f"Failed to load LLM config from ConfigManager, falling back to env vars: {e}")
-    DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY') or os.getenv('LIYING_LLM_API_KEY') or ""
-    BASE_URL = os.getenv('BASE_URL') or os.getenv('LIYING_LLM_BASE_URL') or ""
-    MODEL = os.getenv('MODEL') or os.getenv('LIYING_LLM_MODEL') or ""
+    logger.warning(f"Failed to load LLM config from ConfigManager: {e}")
+    DEEPSEEK_API_KEY = ""
+    BASE_URL = ""
+    MODEL = ""
