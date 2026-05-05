@@ -99,21 +99,21 @@ class PerformanceAnalyzer:
             import multiprocessing
             cpu_count = multiprocessing.cpu_count()
         except Exception:
-            pass
-        
+            logger.debug("Failed to detect CPU count", exc_info=True)
+
         try:
             import torch
             has_cuda = torch.cuda.is_available()
             if has_cuda:
                 cuda_device_count = torch.cuda.device_count()
         except Exception:
-            pass
-        
+            logger.debug("Failed to detect CUDA availability", exc_info=True)
+
         try:
             import psutil
             total_memory_gb = psutil.virtual_memory().total / (1024 ** 3)
         except Exception:
-            pass
+            logger.debug("Failed to detect total memory via psutil", exc_info=True)
         
         return HardwareInfo(
             cpu_count=cpu_count,

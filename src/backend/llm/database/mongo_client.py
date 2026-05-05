@@ -94,9 +94,10 @@ class MongoDBClient:
                     else:
                         return
                 except Exception:
+                    logger.debug("Failed to query service '%s', trying next", name, exc_info=True)
                     continue
         except Exception:
-            pass
+            logger.debug("Failed to ensure MongoDB service on Windows", exc_info=True)
     
     @property
     def db(self) -> Optional[Database]:
@@ -169,7 +170,7 @@ def get_mongo_client(
                 uri = s.mongodb_uri
                 db_name = s.mongodb_db
             except Exception:
-                pass
+                logger.debug("Failed to load MongoDB settings from AppSettings, using provided defaults", exc_info=True)
         _mongo_client = MongoDBClient(host, port, db_name, uri=uri)
     return _mongo_client
 

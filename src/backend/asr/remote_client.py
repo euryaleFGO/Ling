@@ -109,6 +109,7 @@ class RemoteASRClient:
             )
             return resp.status_code == 200
         except Exception:
+            logger.debug("ASR health check failed for %s", self.base_url)
             return False
 
     def recognize_audio(self, audio: np.ndarray, sample_rate: int = 16000) -> str:

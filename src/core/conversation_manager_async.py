@@ -183,6 +183,7 @@ class AsyncConversationManager:
                 import torch
                 return bool(torch.cuda.is_available())
             except Exception:
+                logger.debug("torch.cuda.is_available() check failed, falling back to CPU")
                 return False
 
         def _cuda_count() -> int:
@@ -190,6 +191,7 @@ class AsyncConversationManager:
                 import torch
                 return int(torch.cuda.device_count())
             except Exception:
+                logger.debug("torch.cuda.device_count() check failed, returning 0")
                 return 0
 
         if req == "auto":
@@ -254,6 +256,7 @@ class AsyncConversationManager:
                     if s.asr_model_dir.exists():
                         model_dir = str(s.asr_model_dir)
                 except Exception:
+                    logger.debug("Failed to load ASR model dir from AppSettings")
                     pass
                 for p in [
                     project_root / "models" / "ASR" / "paraformer-zh-streaming",
@@ -270,6 +273,7 @@ class AsyncConversationManager:
                     if s.asr_vad_dir.exists():
                         vad_model = str(s.asr_vad_dir)
                 except Exception:
+                    logger.debug("Failed to load VAD model dir from AppSettings")
                     pass
                 for p in [
                     project_root / "models" / "ASR" / "fsmn-vad",
@@ -342,6 +346,7 @@ class AsyncConversationManager:
                     if s.tts_model_dir.exists():
                         default_paths.insert(0, s.tts_model_dir)
                 except Exception:
+                    logger.debug("Failed to load TTS model dir from AppSettings")
                     pass
                 for p in default_paths:
                     if p.exists():
@@ -775,7 +780,7 @@ class AsyncConversationManager:
                 self._set_state(ConversationState.IDLE)
             raise
         except Exception:
-            log.exception("Turn 失败")
+            logger.exception("Turn failed")
             self._drain_queue(pending)
             worker.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):

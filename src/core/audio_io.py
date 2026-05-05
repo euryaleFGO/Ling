@@ -223,7 +223,7 @@ class AudioInput:
         try:
             self._vad.reset()
         except Exception:
-            pass
+            logger.debug("Failed to reset VAD state before recording", exc_info=True)
         
         speech_buffer = []
         is_speaking = False

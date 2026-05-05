@@ -10,6 +10,7 @@
     manager.start()  # 开始对话循环
 """
 
+import logging
 import sys
 import time
 import threading
@@ -19,6 +20,8 @@ from pathlib import Path
 from typing import Optional, Callable
 from dataclasses import dataclass
 from enum import Enum
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 
@@ -241,6 +244,7 @@ class ConversationManager:
                     if s.asr_model_dir.exists():
                         model_dir = str(s.asr_model_dir)
                 except Exception:
+                    logger.debug("Failed to load ASR model dir from AppSettings")
                     pass
                 for p in [
                     project_root / "models" / "ASR" / "paraformer-zh-streaming",
@@ -257,6 +261,7 @@ class ConversationManager:
                     if s.asr_vad_dir.exists():
                         vad_model = str(s.asr_vad_dir)
                 except Exception:
+                    logger.debug("Failed to load VAD model dir from AppSettings")
                     pass
                 for p in [
                     project_root / "models" / "ASR" / "fsmn-vad",
@@ -299,6 +304,7 @@ class ConversationManager:
                 import torch
                 return bool(torch.cuda.is_available())
             except Exception:
+                logger.debug("torch.cuda.is_available() check failed, falling back to CPU")
                 return False
 
         def _cuda_count() -> int:
@@ -306,6 +312,7 @@ class ConversationManager:
                 import torch
                 return int(torch.cuda.device_count())
             except Exception:
+                logger.debug("torch.cuda.device_count() check failed, returning 0")
                 return 0
 
         if req == "auto":
@@ -379,6 +386,7 @@ class ConversationManager:
                     if s.tts_model_dir.exists():
                         default_paths.insert(0, s.tts_model_dir)
                 except Exception:
+                    logger.debug("Failed to load TTS model dir from AppSettings")
                     pass
                 for p in default_paths:
                     if p.exists():
@@ -870,12 +878,14 @@ class ConversationManager:
                     if self._audio_input:
                         self._audio_input.stop_listening()
                 except Exception:
+                    logger.debug("Failed to stop audio input before TTS playback")
                     pass
                 self._speak(ai_response)
                 try:
                     if self._audio_input and self.config.auto_listen:
                         self._audio_input.start_listening()
                 except Exception:
+                    logger.debug("Failed to restart audio input after TTS playback")
                     pass
                 log.debug(f"[耗时] TTS+播放 总: {time.perf_counter() - t0_tts:.2f}s")
 
@@ -959,6 +969,7 @@ class ConversationManager:
             rms = float(np.sqrt(np.mean(a ** 2)))
             return rms >= 0.002
         except Exception:
+            logger.debug("Audio energy estimation failed, allowing offline fallback")
             # 若能量估计失败，保守允许离线兜底
             return True
 
@@ -1222,8 +1233,9 @@ class ConversationManager:
             try:
                 self._interrupt_audio_input.stop_listening()
             except Exception:
+                logger.debug("Failed to stop interrupt audio input listener")
                 pass
-        
+
         # 等待线程结束
         if self._interrupt_thread and self._interrupt_thread.is_alive():
             self._interrupt_thread.join(timeout=0.5)
@@ -1306,6 +1318,7 @@ class ConversationManager:
                 try:
                     self._interrupt_audio_input.stop_listening()
                 except Exception:
+                    logger.debug("Failed to stop interrupt audio input in monitor finally block")
                     pass
 
     def _speak(self, text: str):
@@ -1445,6 +1458,7 @@ class ConversationManager:
                     self._on_audio_rms(rms)
                 time.sleep(window_ms / 1000.0)
         except Exception:
+            logger.debug("Audio RMS monitoring thread encountered an error")
             pass
 
     # Rhubarb 口型映射: shape → (openY, form)
@@ -1495,6 +1509,7 @@ class ConversationManager:
             if self._on_viseme:
                 self._on_viseme(0.0, 0.0)
         except Exception:
+            logger.debug("Viseme (lip-sync) thread encountered an error")
             pass
     
     # === 手动触发方法（供外部调用）===

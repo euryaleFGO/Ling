@@ -12,12 +12,15 @@
 """
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 from dataclasses import dataclass, field
 
 from core.log import log
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -533,7 +536,7 @@ class ConfigManager:
                 return True
             return False
         except Exception:
-            log.warn("Failed to check config file for updates")
+            logger.warning("Failed to check config file for updates", exc_info=True)
             return False
 
     def reload_if_changed(self) -> bool:

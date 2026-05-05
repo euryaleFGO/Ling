@@ -1,9 +1,12 @@
 import json
+import logging
 import os
 import shutil
 import time
 from dataclasses import dataclass
 from typing import List
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -33,6 +36,7 @@ class BackupManager:
                     data = json.load(f)
                 self._snapshots = [Snapshot(**s) for s in data]
             except Exception:
+                logger.warning("Failed to load backup index from %s, resetting snapshots", self._index_path, exc_info=True)
                 self._snapshots = []
 
     def _save_index(self):
@@ -79,6 +83,7 @@ class BackupManager:
                     shutil.copy2(src, fp)
             return True
         except Exception:
+            logger.error("Failed to rollback snapshot %s", snapshot.id, exc_info=True)
             return False
 
     def list_snapshots(self) -> List[Snapshot]:
@@ -92,7 +97,7 @@ class BackupManager:
             try:
                 shutil.rmtree(snap.backup_dir, ignore_errors=True)
             except Exception:
-                pass
+                logger.debug("Failed to remove backup directory %s", snap.backup_dir, exc_info=True)
         self._snapshots = self._snapshots[-keep:]
         self._save_index()
         return len(to_remove)

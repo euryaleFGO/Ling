@@ -20,15 +20,19 @@ Python 后端 → Java Live2D 前端 的实时通信桥梁
 
 import asyncio
 import json
+import logging
 import sys
 import threading
 from typing import Any, Callable, Dict, Optional, Set
+
+logger = logging.getLogger(__name__)
 
 # 确保日志立即输出
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
+        logger.debug("Failed to reconfigure stdout encoding to utf-8")
         pass
 
 from core.log import log
@@ -88,8 +92,10 @@ class WebSocketServer:
                         try:
                             await other.send(message)
                         except Exception:
+                            logger.debug(f"Failed to relay message to client {other.remote_address}")
                             pass
         except Exception:
+            logger.debug(f"WebSocket handler error for client {addr}")
             pass
         finally:
             self.clients.discard(websocket)
@@ -106,6 +112,7 @@ class WebSocketServer:
             try:
                 await client.send(message)
             except Exception:
+                logger.debug(f"Failed to broadcast message to client {client.remote_address}, marking disconnected")
                 disconnected.add(client)
         self.clients -= disconnected
 

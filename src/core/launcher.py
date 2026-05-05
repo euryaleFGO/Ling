@@ -1,3 +1,4 @@
+import logging
 import sys
 import subprocess
 import os
@@ -6,6 +7,8 @@ import platform
 import shutil
 import threading
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QDialog, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton, QLabel
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtCore import Qt
@@ -34,6 +37,7 @@ class Launcher:
                     self.text_only = True
                     log.info("[配置] 从配置文件启用文字输入模式")
             except Exception:
+                logger.debug("Failed to read text_input config from AppSettings")
                 pass
         self.asr_device = asr_device
         
@@ -185,6 +189,7 @@ class Launcher:
                         if ":" in host_port:
                             expected_port = int(host_port.rsplit(":", 1)[1])
             except Exception:
+                logger.debug("Failed to parse MongoDB URI port, using default 27017")
                 expected_port = 27017
 
             # 检查进程
@@ -205,6 +210,7 @@ class Launcher:
                 if f":{expected_port}" in port_check.stdout and "LISTENING" in port_check.stdout:
                     return True
         except Exception:
+            logger.debug("Failed to check MongoDB running status")
             pass
         return False
 
@@ -334,6 +340,7 @@ class Launcher:
                             if motion and motion != "Idle":
                                 send_motion(motion)
                     except Exception:
+                        logger.debug("Failed to send subtitle/motion to Live2D via WebSocket")
                         pass
                 
                 def on_audio_rms(rms):
@@ -342,6 +349,7 @@ class Launcher:
                         from core.message_server import send_audio_rms
                         send_audio_rms(rms)
                     except Exception:
+                        logger.debug("Failed to send audio RMS to Live2D via WebSocket")
                         pass
                 
                 def on_viseme(openY, form):
@@ -350,6 +358,7 @@ class Launcher:
                         from core.message_server import send_viseme
                         send_viseme(openY, form)
                     except Exception:
+                        logger.debug("Failed to send viseme data to Live2D via WebSocket")
                         pass
 
                 def on_state_change(state):
@@ -358,6 +367,7 @@ class Launcher:
                         from core.message_server import send_state
                         send_state(state.value)
                     except Exception:
+                        logger.debug("Failed to send conversation state to Live2D via WebSocket")
                         pass
 
                 def on_exit_requested(reason: str):
@@ -586,6 +596,7 @@ class Launcher:
                                 if line and line.strip():
                                     log.debug(f"[Live2D] {line.rstrip()}")
                         except Exception:
+                            logger.debug("Error reading Live2D process output")
                             pass
 
                     _t = threading.Thread(target=_read_live2d_output, daemon=True, name="Live2D-Output")
@@ -798,6 +809,7 @@ class Launcher:
                         )
                         log.debug(f"已关闭 Live2D Java 进程 (PID: {pid})")
                     except Exception:
+                        logger.debug(f"Failed to kill Live2D Java process PID {pid}")
                         pass
         except Exception as e:
             log.debug(f"查找 Java 进程时出错: {e}")

@@ -446,7 +446,7 @@ class VisionEngine:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         except Exception:
-            pass
+            logger.debug("Failed to clear CUDA cache during module unload", exc_info=True)
 
     def get_loaded_modules(self) -> List[str]:
         """获取已加载的模块列表"""

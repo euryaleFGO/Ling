@@ -116,6 +116,7 @@ class RemoteTTSClient:
             )
             return resp.status_code == 200
         except Exception:
+            logger.debug("TTS health check failed for %s", self.base_url)
             return False
 
     def generate_audio(self, text: str) -> Optional[Tuple[np.ndarray, int]]:
@@ -292,7 +293,7 @@ class RemoteTTSClient:
                             import json as _json
                             visemes = _json.loads(base64.b64decode(viseme_b64).decode('utf-8'))
                         except Exception:
-                            pass
+                            logger.debug("Failed to parse viseme data from response headers")
 
                     wav_bytes = resp.content
                     audio = self._wav_bytes_to_array(wav_bytes)
