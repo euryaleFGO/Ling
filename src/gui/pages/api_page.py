@@ -12,8 +12,9 @@ from PyQt6.QtWidgets import (
     QInputDialog, QFrame, QDialog
 )
 from PyQt6.QtCore import Qt
-import os
 from pathlib import Path
+
+from core.config_manager import get_config_manager
 
 
 class CustomInputDialog(QDialog):
@@ -117,11 +118,9 @@ class ApiPage(QWidget):
     def __init__(self):
         super().__init__()
         project_root = Path(__file__).parent.parent.parent.parent
-        self.env_path = project_root / ".env"
-        self.backend_env_path = project_root / "src" / "backend" / "llm" / "api_infer" / ".env"
         self.profiles_path = project_root / "config" / "llm_profiles.json"
         self._profiles: dict = {"active": "", "profiles": {}}
-        self._loading = False          # 加载期间禁止信号触发
+        self._loading = False
         self.init_ui()
         self.load_settings()
 
@@ -170,7 +169,7 @@ class ApiPage(QWidget):
         profile_row.addWidget(self.new_profile_btn)
 
         self.switch_profile_btn = QPushButton("切换")
-        self.switch_profile_btn.setToolTip("加载所选方案到表单并写入 .env")
+        self.switch_profile_btn.setToolTip("加载所选方案到表单并写入 settings.json")
         self.switch_profile_btn.setProperty("class", "secondary")
         self.switch_profile_btn.clicked.connect(self.switch_to_selected_profile)
         profile_row.addWidget(self.switch_profile_btn)
@@ -459,72 +458,33 @@ class ApiPage(QWidget):
         self._loading = False
 
     # ================================================================
-    #  .env 读写
+    #  ConfigManager 读写
     # ================================================================
-    def _read_env_file(self, path: Path) -> dict:
-        result = {}
-        try:
-            if path.exists():
-                with open(path, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith('#') and '=' in line:
-                            key, value = line.split('=', 1)
-                            result[key.strip()] = value.strip().strip('"\'')
-        except Exception as e:
-            print(f"读取 .env 失败 ({path}): {e}")
-        return result
-
-    def _write_env_file(self, path: Path, env_vars: dict):
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            lines = []
-            written_keys = set()
-            if path.exists():
-                with open(path, 'r', encoding='utf-8') as f:
-                    for raw in f:
-                        stripped = raw.strip()
-                        if stripped and not stripped.startswith('#') and '=' in stripped:
-                            key = stripped.split('=', 1)[0].strip()
-                            if key in env_vars:
-                                lines.append(f"{key}={env_vars[key]}\n")
-                                written_keys.add(key)
-                            else:
-                                lines.append(raw if raw.endswith('\n') else raw + '\n')
-                        else:
-                            lines.append(raw if raw.endswith('\n') else raw + '\n')
-            for key, value in env_vars.items():
-                if key not in written_keys:
-                    lines.append(f"{key}={value}\n")
-            with open(path, 'w', encoding='utf-8') as f:
-                f.writelines(lines)
-        except Exception as e:
-            print(f"写入 .env 失败 ({path}): {e}")
-
-    def _apply_profile_to_envs(self, profile: dict):
-        api_base    = profile.get("api_base", "")
-        api_key     = profile.get("api_key", "")
-        model       = profile.get("model", "")
-        temperature = profile.get("temperature", "")
-        max_tokens  = profile.get("max_tokens", "")
-        timeout     = profile.get("timeout", "")
-
-        gui_vars = {}
-        if api_base:    gui_vars["OPENAI_API_BASE"] = api_base
-        if api_key:     gui_vars["OPENAI_API_KEY"]  = api_key
-        if model:       gui_vars["OPENAI_MODEL"]    = model
-        if temperature: gui_vars["TEMPERATURE"]     = temperature
-        if max_tokens:  gui_vars["MAX_TOKENS"]      = max_tokens
-        if timeout:     gui_vars["TIMEOUT"]         = timeout
-        if gui_vars:
-            self._write_env_file(self.env_path, gui_vars)
-
-        backend_vars = {}
-        if api_base: backend_vars["BASE_URL"]         = api_base
-        if api_key:  backend_vars["DEEPSEEK_API_KEY"] = api_key
-        if model:    backend_vars["MODEL"]            = model
-        if backend_vars:
-            self._write_env_file(self.backend_env_path, backend_vars)
+    def _apply_profile_to_config(self, profile: dict):
+        """Apply profile to ConfigManager and save settings.json"""
+        cfg = get_config_manager()
+        if profile.get("api_base"):
+            cfg.config.llm.base_url = profile["api_base"]
+        if profile.get("api_key"):
+            cfg.config.llm.api_key = profile["api_key"]
+        if profile.get("model"):
+            cfg.config.llm.model = profile["model"]
+        if profile.get("temperature"):
+            try:
+                cfg.config.llm.temperature = float(profile["temperature"])
+            except ValueError:
+                pass
+        if profile.get("max_tokens"):
+            try:
+                cfg.config.llm.max_tokens = int(profile["max_tokens"])
+            except ValueError:
+                pass
+        if profile.get("timeout"):
+            try:
+                cfg.config.llm.timeout = int(profile["timeout"])
+            except ValueError:
+                pass
+        cfg.save()
 
     # ================================================================
     #  profiles.json 读写
@@ -574,19 +534,17 @@ class ApiPage(QWidget):
             self._apply_profile_to_form(profiles[active])
         else:
             try:
-                env_vars = self._read_env_file(self.backend_env_path)
-                if not env_vars:
-                    env_vars = self._read_env_file(self.env_path)
-                self.api_base_edit.setText(
-                    env_vars.get('BASE_URL', env_vars.get('OPENAI_API_BASE', '')))
-                self.api_key_edit.setText(
-                    env_vars.get('DEEPSEEK_API_KEY', env_vars.get('OPENAI_API_KEY', '')))
-                model = env_vars.get('MODEL', env_vars.get('OPENAI_MODEL', ''))
-                if model:
-                    self.model_combo.setCurrentText(model)
-                self.temperature_edit.setText(env_vars.get('TEMPERATURE', ''))
-                self.max_tokens_edit.setText(env_vars.get('MAX_TOKENS', ''))
-                self.timeout_edit.setText(env_vars.get('TIMEOUT', ''))
+                llm = get_config_manager().config.llm
+                self.api_base_edit.setText(llm.base_url)
+                self.api_key_edit.setText(llm.api_key)
+                if llm.model:
+                    self.model_combo.setCurrentText(llm.model)
+                if llm.temperature:
+                    self.temperature_edit.setText(str(llm.temperature))
+                if llm.max_tokens:
+                    self.max_tokens_edit.setText(str(llm.max_tokens))
+                if llm.timeout:
+                    self.timeout_edit.setText(str(llm.timeout))
             except Exception as e:
                 print(f"加载 API 设置失败: {e}")
 
@@ -665,35 +623,9 @@ class ApiPage(QWidget):
             f'3️⃣ 点击"测试连接"验证\n'
             f'4️⃣ 点击"保存"保存配置\n'
             f'5️⃣ 点击"切换"激活配置')
-        
-        # 创建空方案
-        profiles[name] = {
-            "provider": "自定义",
-            "api_base": "",
-            "api_key": "",
-            "model": "",
-            "temperature": "",
-            "max_tokens": "",
-            "timeout": ""
-        }
-        self._profiles["profiles"] = profiles
-        self._profiles["active"] = name
-        self.save_profiles()
-        self._refresh_profile_combo()
-        
-        # 显示引导提示
-        QMessageBox.information(
-            self, "方案已创建",
-            f'✅ 方案 "{name}" 已创建！\n\n'
-            f'📝 接下来请配置：\n'
-            f'1️⃣ 选择 API 提供商（如 Xiaomi MiMo）\n'
-            f'2️⃣ 填写 API Key 和模型\n'
-            f'3️⃣ 点击"测试连接"验证\n'
-            f'4️⃣ 点击"保存"保存配置\n'
-            f'5️⃣ 点击"切换"激活配置')
-    
+
     def switch_to_selected_profile(self):
-        """切换：加载所选方案到表单 + 写入 .env"""
+        """切换：加载所选方案到表单 + 写入 settings.json"""
         name = self.profile_combo.currentText()
         if not name:
             return
@@ -702,12 +634,12 @@ class ApiPage(QWidget):
             QMessageBox.warning(self, "错误", f'找不到方案 "{name}"')
             return
         self._apply_profile_to_form(profiles[name])
-        self._apply_profile_to_envs(profiles[name])
+        self._apply_profile_to_config(profiles[name])
         self._profiles["active"] = name
         self.save_profiles()
         QMessageBox.information(
             self, "已切换",
-            f"已切换到方案：{name}\n配置已写入 .env，重启后端服务后完全生效。")
+            f"已切换到方案：{name}\n配置已写入 settings.json，重启后端服务后完全生效。")
 
     def save_to_current_profile(self):
         """保存：将表单覆盖写入当前选中的方案"""
@@ -722,11 +654,11 @@ class ApiPage(QWidget):
         self._profiles.setdefault("profiles", {})[name] = profile_data
         self._profiles["active"] = name
         self.save_profiles()
-        self._apply_profile_to_envs(profile_data)
+        self._apply_profile_to_config(profile_data)
         self._refresh_profile_combo()
         QMessageBox.information(
             self, "已保存",
-            f'方案 "{name}" 已更新，并同步写入 .env 文件。')
+            f'方案 "{name}" 已更新，并同步写入 settings.json。')
 
     def save_as_new_profile(self):
         """另存为：将表单保存到新名称（已被 create_new_profile 替代，保留以防兼容性问题）"""
@@ -759,7 +691,7 @@ class ApiPage(QWidget):
         self._refresh_profile_combo()
         QMessageBox.information(
             self, "已保存",
-            f'方案 "{name}" 已保存。\n点击"切换"可将其写入 .env 并生效。')
+            f'方案 "{name}" 已保存。\n点击"切换"可将其写入 settings.json 并生效。')
 
     def delete_current_profile(self):
         """删除所选方案"""
