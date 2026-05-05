@@ -10,11 +10,16 @@
 """
 import sys
 import time
+import logging
 from pathlib import Path
 from datetime import datetime
 
 # 日志目录
 LOG_DIR = Path(__file__).parent.parent.parent / "logs"
+
+# 配置日志
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 def get_latest_log_file():
@@ -36,13 +41,12 @@ def tail_file(filepath, lines=20):
 
 def monitor():
     """实时监控日志"""
-    print("=" * 60)
-    print("  🔍 玲 - Agent 日志监控")
-    print("=" * 60)
-    print(f"  日志目录: {LOG_DIR}")
-    print("  按 Ctrl+C 退出")
-    print("=" * 60)
-    print()
+    logger.info("=" * 60)
+    logger.info("  🔍 玲 - Agent 日志监控")
+    logger.info("=" * 60)
+    logger.info(f"  日志目录: {LOG_DIR}")
+    logger.info("  按 Ctrl+C 退出")
+    logger.info("=" * 60)
     
     # 确保日志目录存在
     LOG_DIR.mkdir(exist_ok=True)
@@ -56,7 +60,7 @@ def monitor():
             log_file = get_latest_log_file()
             
             if not log_file:
-                print(f"\r⏳ 等待日志文件... ({datetime.now().strftime('%H:%M:%S')})", end="", flush=True)
+                logger.info(f"\r⏳ 等待日志文件... ({datetime.now().strftime('%H:%M:%S')})")
                 time.sleep(1)
                 continue
             
@@ -64,7 +68,7 @@ def monitor():
             if log_file != last_file:
                 last_file = log_file
                 last_position = 0
-                print(f"\n📂 监控文件: {log_file.name}\n")
+                logger.info(f"\n📂 监控文件: {log_file.name}\n")
             
             # 读取新内容
             with open(log_file, 'r', encoding='utf-8') as f:
@@ -75,15 +79,15 @@ def monitor():
             # 输出新内容（带颜色）
             if new_content:
                 for line in new_content.splitlines():
-                    print(colorize(line))
+                    logger.info(colorize(line))
             
             time.sleep(0.3)  # 300ms 刷新
             
         except KeyboardInterrupt:
-            print("\n\n👋 停止监控")
+            logger.info("\n\n👋 停止监控")
             break
         except Exception as e:
-            print(f"\n❌ 监控错误: {e}")
+            logger.error(f"\n❌ 监控错误: {e}")
             time.sleep(1)
 
 

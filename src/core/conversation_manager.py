@@ -287,7 +287,7 @@ class ConversationManager:
         except Exception as e:
             log.warn(f"ASR 初始化失败: {e}")
             import traceback
-            traceback.print_exc()
+            log.error(traceback.format_exc())
             self._asr = None
 
     def _resolve_asr_device(self, requested: str) -> str:
@@ -438,7 +438,7 @@ class ConversationManager:
         notify_text = f"⏰ 提醒：{content}"
         
         log.info(f"[提醒] 触发: {content}")
-        print(f"\n{notify_text}")
+        log.info(f"\n{notify_text}")
         
         # 发送字幕到 Live2D 气泡框
         self._send_subtitle(notify_text, is_final=True, emotion="happy")
@@ -844,7 +844,7 @@ class ConversationManager:
                     log.debug("收到退出指令")
                     break
                 
-                print(f"\n👤 用户: {user_text}")
+                log.info(f"\n👤 用户: {user_text}")
                 if self._on_user_text:
                     self._on_user_text(user_text)
                 
@@ -858,7 +858,7 @@ class ConversationManager:
                 if not ai_response:
                     continue
                 
-                print(f"🤖 AI: {ai_response}")
+                log.info(f"🤖 AI: {ai_response}")
                 if self._on_ai_text:
                     self._on_ai_text(ai_response)
                 
@@ -894,12 +894,12 @@ class ConversationManager:
                 self._set_state(ConversationState.IDLE)
                 
             except KeyboardInterrupt:
-                print("\n用户中断")
+                log.info("\n用户中断")
                 break
             except Exception as e:
                 log.error(f"对话错误: {e}")
                 import traceback
-                traceback.print_exc()
+                log.error(traceback.format_exc())
                 time.sleep(1)
         
         self.stop()
@@ -1415,7 +1415,7 @@ class ConversationManager:
             except Exception as e:
                 log.error(f"TTS 错误: {e}")
                 import traceback
-                traceback.print_exc()
+                log.error(traceback.format_exc())
             finally:
                 # 确保停止打断监听
                 if self.config.enable_barge_in:
@@ -1542,5 +1542,5 @@ def start_conversation(
 
 if __name__ == "__main__":
     # 测试运行
-    print("启动对话管理器...")
+    log.info("启动对话管理器...")
     start_conversation()

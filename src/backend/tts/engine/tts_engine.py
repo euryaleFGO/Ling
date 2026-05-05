@@ -15,6 +15,7 @@ import sys
 import re
 import time
 import gc
+import logging
 import threading
 import numpy as np
 import torch
@@ -23,6 +24,8 @@ import io
 from queue import Queue, Empty
 from threading import Thread, Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+logger = logging.getLogger(__name__)
 
 # ---------- 淡入淡出 ----------
 def fade_in_out(audio: np.ndarray, sr: int, fade_duration: float = 0.01) -> np.ndarray:
@@ -72,20 +75,20 @@ class CosyvoiceRealTimeTTS:
 
         # 4GB 显卡强制关闭 JIT 和 TRT
         if load_jit or load_trt:
-            print(f"[WARN] 4GB 显卡不支持 JIT/TRT 优化，已强制关闭")
+            logger.warning(f"[WARN] 4GB 显卡不支持 JIT/TRT 优化，已强制关闭")
             load_jit = False
             load_trt = False
         
-        print(f"加载模型中... (JIT: 禁用, TRT: 禁用, FP16: 启用)")
+        logger.info(f"加载模型中... (JIT: 禁用, TRT: 禁用, FP16: 启用)")
         self.cosyvoice = CosyVoice2(model_path, load_jit=False, load_trt=False, fp16=True)
         self.load_wav_func = load_wav
         self.sample_rate = self.cosyvoice.sample_rate
         self.ref_wav = None
         if reference_audio_path and os.path.isfile(reference_audio_path):
             self.ref_wav = self.load_wav_func(reference_audio_path, 16000)
-            print(f"[INFO] 已加载参考音频：{reference_audio_path}")
+            logger.info(f"[INFO] 已加载参考音频：{reference_audio_path}")
         elif reference_audio_path:
-            print(f"[WARN] 参考音频不存在：{reference_audio_path}")
+            logger.warning(f"[WARN] 参考音频不存在：{reference_audio_path}")
 
         # ---- 默认说话人（无参考音频时兜底）----
         self.default_spk_id = None
@@ -99,9 +102,9 @@ class CosyvoiceRealTimeTTS:
                 keys = list(self.cosyvoice.frontend.spk2info.keys())
                 if keys:
                     self.default_spk_id = keys[0]
-                    print(f"[INFO] 已加载说话人库，共 {len(keys)} 个，默认 spk_id={self.default_spk_id}")
+                    logger.info(f"[INFO] 已加载说话人库，共 {len(keys)} 个，默认 spk_id={self.default_spk_id}")
         except Exception as e:
-            print(f"[WARN] 加载 spk2info.pt 失败，将无法在无参考音频时兜底：{e}")
+            logger.error(f"[WARN] 加载 spk2info.pt 失败，将无法在无参考音频时兜底：{e}")
 
         # ---- 音色缓存 ----
         # 注意：音色缓存将在第一次生成音频时自动提取（延迟初始化）
@@ -172,14 +175,14 @@ class CosyvoiceRealTimeTTS:
             except Empty:
                 continue
             except Exception as e:
-                print(f"[保存音频] 错误：{e}")
+                logger.error(f"[保存音频] 错误：{e}")
                 self.audio_queue.task_done()
         
         # 合并所有音频块并保存
         if audio_chunks:
             full_audio = np.concatenate(audio_chunks)
             self.audio_to_wav_file(full_audio, self.sample_rate, output_file)
-            print(f"[保存音频] 已保存到: {output_file}")
+            logger.info(f"[保存音频] 已保存到: {output_file}")
         
         self._close_stream()
 
@@ -192,9 +195,9 @@ class CosyvoiceRealTimeTTS:
     # ------------ 合成线程（StopIteration 已修复） ------------
     def _synthesis_worker(self, segments, use_clone):
         for idx, seg in enumerate(segments, 1):
-            print(f"【合成】{idx}/{len(segments)}：{seg[:30]}...")
+            logger.info(f"【合成】{idx}/{len(segments)}：{seg[:30]}...")
             if not self._word_pattern.search(seg):
-                print(f"【跳过】段 {idx} 无有效文字")
+                logger.info(f"【跳过】段 {idx} 无有效文字")
                 continue
 
             results = None
@@ -236,11 +239,11 @@ class CosyvoiceRealTimeTTS:
                 # 4）入队（单声道）
                 dur = len(audio) / self.sample_rate
                 self.total_audio_dur += dur
-                print(f"【合成】片段 {idx} 完成，时长 {dur:.2f}s")
+                logger.info(f"【合成】片段 {idx} 完成，时长 {dur:.2f}s")
                 self.audio_queue.put(audio, block=True)
 
             except Exception as e:
-                print(f"【合成】段 {idx} 失败：{repr(e)}")
+                logger.error(f"【合成】段 {idx} 失败：{repr(e)}")
                 continue
 
             finally:
@@ -263,10 +266,10 @@ class CosyvoiceRealTimeTTS:
         """
         text = text.strip()
         if not text:
-            print("[提示] 输入文本为空")
+            logger.info("[提示] 输入文本为空")
             return False
         if use_clone and self.ref_wav is None:
-            print("[WARN] 无参考语音，自动使用默认音色")
+            logger.warning("[WARN] 无参考语音，自动使用默认音色")
             use_clone = False
         
         # 如果没有指定输出文件，使用默认路径
@@ -278,9 +281,9 @@ class CosyvoiceRealTimeTTS:
         try:
             segments = self.split_text_by_punctuation(text)
             if not segments:
-                print("[提示] 没有有效可合成文本")
+                logger.info("[提示] 没有有效可合成文本")
                 return False
-            print(f"文本已切分为 {len(segments)} 段")
+            logger.info(f"文本已切分为 {len(segments)} 段")
 
             # 清空队列 & 启动保存音频线程
             self._clear_queue()
@@ -301,10 +304,10 @@ class CosyvoiceRealTimeTTS:
             self.is_playing = False
             if self.playback_thread:
                 self.playback_thread.join(timeout=5)
-            print(f"✅ 合成与保存完成，文件: {output_file}\n")
+            logger.info(f"✅ 合成与保存完成，文件: {output_file}")
             return True
         except Exception as e:
-            print(f"❌ 合成错误：{e}")
+            logger.error(f"❌ 合成错误：{e}")
             self.is_playing = False
             self._close_stream()
             return False
@@ -324,10 +327,10 @@ class CosyvoiceRealTimeTTS:
         返回: (idx, audio) 或 (idx, None) 如果失败
         """
         if not self._word_pattern.search(seg):
-            print(f"【跳过】段 {idx} 无有效文字")
+            logger.info(f"【跳过】段 {idx} 无有效文字")
             return (idx, None)
         
-        print(f"【合成】{idx}：{seg[:30]}...")
+        logger.info(f"【合成】{idx}：{seg[:30]}...")
         results = None
         try:
             # 1）生成 - 需要加锁保护音色缓存访问
@@ -365,11 +368,11 @@ class CosyvoiceRealTimeTTS:
             audio = fade_in_out(audio, self.sample_rate, self.fade_dur)
             
             dur = len(audio) / self.sample_rate
-            print(f"【合成】片段 {idx} 完成，时长 {dur:.2f}s")
+            logger.info(f"【合成】片段 {idx} 完成，时长 {dur:.2f}s")
             return (idx, audio)
             
         except Exception as e:
-            print(f"【合成】段 {idx} 失败：{repr(e)}")
+            logger.error(f"【合成】段 {idx} 失败：{repr(e)}")
             return (idx, None)
         finally:
             if results is not None:
@@ -384,17 +387,17 @@ class CosyvoiceRealTimeTTS:
         """
         text = text.strip()
         if not text:
-            print("[提示] 输入文本为空")
+            logger.info("[提示] 输入文本为空")
             return None
         if use_clone and self.ref_wav is None:
-            print("[WARN] 无参考语音，自动使用默认音色")
+            logger.warning("[WARN] 无参考语音，自动使用默认音色")
             use_clone = False
         try:
             segments = self.split_text_by_punctuation(text)
             if not segments:
-                print("[提示] 没有有效可合成文本")
+                logger.info("[提示] 没有有效可合成文本")
                 return None
-            print(f"文本已切分为 {len(segments)} 段，开始并行生成...")
+            logger.info(f"文本已切分为 {len(segments)} 段，开始并行生成...")
 
             # 如果没有指定工作线程数，4GB 显存最多 2 个并行，避免 OOM
             if max_workers is None:
@@ -418,7 +421,7 @@ class CosyvoiceRealTimeTTS:
             
             # 按索引顺序合并音频段（保证顺序）
             if not audio_results:
-                print("[提示] 没有生成任何音频")
+                logger.info("[提示] 没有生成任何音频")
                 return None
             
             # 按索引排序后合并
@@ -433,13 +436,13 @@ class CosyvoiceRealTimeTTS:
             gc.collect()
             torch.cuda.empty_cache()
             
-            print(f"✅ 音频生成完成，总时长 {len(full_audio) / self.sample_rate:.2f}s\n")
+            logger.info(f"✅ 音频生成完成，总时长 {len(full_audio) / self.sample_rate:.2f}s")
             return (full_audio, self.sample_rate)
             
         except Exception as e:
-            print(f"❌ 生成错误：{e}")
+            logger.error(f"❌ 生成错误：{e}")
             import traceback
-            traceback.print_exc()
+            logger.debug(traceback.format_exc())
             return None
 
     # ------------ 流式生成：边合成边返回（并行合成 + 顺序输出）------------
@@ -470,7 +473,7 @@ class CosyvoiceRealTimeTTS:
             return
         
         total_segments = len(segments)
-        print(f"[TTS流式] 共 {total_segments} 段，开始并行合成...")
+        logger.info(f"[TTS流式] 共 {total_segments} 段，开始并行合成...")
         
         if max_workers is None:
             max_workers = min(total_segments, 2)  # 4GB 显存限制
@@ -515,7 +518,7 @@ class CosyvoiceRealTimeTTS:
                         # 所有任务完成但当前段落失败
                         next_to_yield += 1
         
-        print(f"[TTS流式] 合成完成")
+        logger.info(f"[TTS流式] 合成完成")
 
     # ------------ 使用已保存的说话人生成音频（更快）------------
     def generate_audio_with_speaker(self, text: str, spk_id: str, max_workers=None):
@@ -525,15 +528,15 @@ class CosyvoiceRealTimeTTS:
         """
         text = text.strip()
         if not text:
-            print("[提示] 输入文本为空")
+            logger.info("[提示] 输入文本为空")
             return None
         
         try:
             segments = self.split_text_by_punctuation(text)
             if not segments:
-                print("[提示] 没有有效可合成文本")
+                logger.info("[提示] 没有有效可合成文本")
                 return None
-            print(f"使用说话人 {spk_id} 生成音频，文本已切分为 {len(segments)} 段...")
+            logger.info(f"使用说话人 {spk_id} 生成音频，文本已切分为 {len(segments)} 段...")
             
             # 如果没有指定工作线程数，4GB 显存最多 2 个并行
             if max_workers is None:
@@ -554,7 +557,7 @@ class CosyvoiceRealTimeTTS:
                         audio_results[idx] = audio
             
             if not audio_results:
-                print("[提示] 没有生成任何音频")
+                logger.info("[提示] 没有生成任何音频")
                 return None
             
             sorted_indices = sorted(audio_results.keys())
@@ -566,13 +569,13 @@ class CosyvoiceRealTimeTTS:
             gc.collect()
             torch.cuda.empty_cache()
             
-            print(f"✅ 音频生成完成，总时长 {len(full_audio) / self.sample_rate:.2f}s\n")
+            logger.info(f"✅ 音频生成完成，总时长 {len(full_audio) / self.sample_rate:.2f}s")
             return (full_audio, self.sample_rate)
             
         except Exception as e:
-            print(f"❌ 生成错误：{e}")
+            logger.error(f"❌ 生成错误：{e}")
             import traceback
-            traceback.print_exc()
+            logger.debug(traceback.format_exc())
             return None
     
     # ------------ 使用说话人生成单个音频段 ------------
@@ -582,10 +585,10 @@ class CosyvoiceRealTimeTTS:
         返回: (idx, audio) 或 (idx, None) 如果失败
         """
         if not self._word_pattern.search(seg):
-            print(f"【跳过】段 {idx} 无有效文字")
+            logger.info(f"【跳过】段 {idx} 无有效文字")
             return (idx, None)
         
-        print(f"【合成】{idx}：{seg[:30]}...")
+        logger.info(f"【合成】{idx}：{seg[:30]}...")
         results = None
         try:
             # 使用已保存的说话人（通过zero_shot_spk_id参数）
@@ -601,11 +604,11 @@ class CosyvoiceRealTimeTTS:
             audio = fade_in_out(audio, self.sample_rate, self.fade_dur)
             
             dur = len(audio) / self.sample_rate
-            print(f"【合成】片段 {idx} 完成，时长 {dur:.2f}s")
+            logger.info(f"【合成】片段 {idx} 完成，时长 {dur:.2f}s")
             return (idx, audio)
             
         except Exception as e:
-            print(f"【合成】段 {idx} 失败：{repr(e)}")
+            logger.error(f"【合成】段 {idx} 失败：{repr(e)}")
             return (idx, None)
         finally:
             if results is not None:
@@ -684,12 +687,12 @@ if __name__ == "__main__":
     ref_audio = project_root / "Model" / "zjj.wav"  # 示例路径
     
     if not model_path.exists():
-        print(f"错误：模型路径不存在：{model_path}")
+        logger.error(f"错误：模型路径不存在：{model_path}")
         sys.exit(1)
     
     try:
         tts = CosyvoiceRealTimeTTS(str(model_path), str(ref_audio) if ref_audio.exists() else None)
-        print("=== 实时语音助手（输入 q 退出）===")
+        logger.info("=== 实时语音助手（输入 q 退出）===")
         while True:
             txt = input("请输入要转换的文本：")
             if txt.lower() == 'q':
@@ -698,12 +701,12 @@ if __name__ == "__main__":
             result = tts.generate_audio(txt)
             if result:
                 audio_data, sr = result
-                print(f"✅ 生成成功，时长 {len(audio_data) / sr:.2f}s")
+                logger.info(f"✅ 生成成功，时长 {len(audio_data) / sr:.2f}s")
     except KeyboardInterrupt:
-        print("\n用户中断")
+        logger.info("\n用户中断")
     except Exception as e:
-        print(f"初始化失败：{e}")
+        logger.error(f"初始化失败：{e}")
         import traceback
-        traceback.print_exc()
+        logger.debug(traceback.format_exc())
     finally:
-        print("程序已退出")
+        logger.info("程序已退出")

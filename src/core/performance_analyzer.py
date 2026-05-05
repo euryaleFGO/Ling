@@ -11,9 +11,12 @@
 
 import platform
 import statistics
+import logging
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple
 from enum import Enum
+
+logger = logging.getLogger(__name__)
 
 from core.log import log
 
@@ -551,21 +554,21 @@ class PerformanceAnalyzer:
     
     def print_report(self, report: PerformanceReport):
         """打印性能报告"""
-        print("\n" + "=" * 70)
-        print("性能分析报告")
-        print("=" * 70)
-        print()
-        
+        logger.info("=" * 70)
+        logger.info("性能分析报告")
+        logger.info("=" * 70)
+        logger.info("")
+
         # 总结
-        print(report.summary)
-        
+        logger.info(report.summary)
+
         # 详细瓶颈
         if report.bottlenecks:
-            print("=" * 70)
-            print("详细瓶颈分析")
-            print("=" * 70)
-            print()
-            
+            logger.info("=" * 70)
+            logger.info("详细瓶颈分析")
+            logger.info("=" * 70)
+            logger.info("")
+
             for i, bottleneck in enumerate(report.bottlenecks, 1):
                 severity_icon = {
                     Severity.LOW: "ℹ️",
@@ -573,29 +576,29 @@ class PerformanceAnalyzer:
                     Severity.HIGH: "🔴",
                     Severity.CRITICAL: "🚨",
                 }
-                
-                print(f"{i}. {severity_icon[bottleneck.severity]} [{bottleneck.severity.value.upper()}] {bottleneck.type.value.upper()}")
-                print(f"   指标: {bottleneck.metric}")
-                print(f"   当前值: {bottleneck.current_value:.1f}ms")
-                print(f"   目标值: {bottleneck.target_value:.1f}ms")
-                print(f"   描述: {bottleneck.description}")
-                print(f"   优化建议:")
+
+                logger.info("%d. %s [%s] %s", i, severity_icon[bottleneck.severity], bottleneck.severity.value.upper(), bottleneck.type.value.upper())
+                logger.info("   指标: %s", bottleneck.metric)
+                logger.info("   当前值: %.1fms", bottleneck.current_value)
+                logger.info("   目标值: %.1fms", bottleneck.target_value)
+                logger.info("   描述: %s", bottleneck.description)
+                logger.info("   优化建议:")
                 for suggestion in bottleneck.suggestions:
-                    print(f"     - {suggestion}")
-                print()
-        
+                    logger.info("     - %s", suggestion)
+                logger.info("")
+
         # 推荐配置
         if report.recommended_config:
-            print("=" * 70)
-            print("推荐配置")
-            print("=" * 70)
-            print()
-            
+            logger.info("=" * 70)
+            logger.info("推荐配置")
+            logger.info("=" * 70)
+            logger.info("")
+
             import json
-            print(json.dumps(report.recommended_config, indent=2, ensure_ascii=False))
-            print()
-        
-        print("=" * 70)
+            logger.info(json.dumps(report.recommended_config, indent=2, ensure_ascii=False))
+            logger.info("")
+
+        logger.info("=" * 70)
     
     def export_report(self, report: PerformanceReport, output_path: str):
         """导出性能报告到文件"""

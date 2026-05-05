@@ -4,6 +4,7 @@
 通过 HTTP API 调用远程/云端 TTS 服务
 """
 
+import logging
 import requests
 import base64
 import numpy as np
@@ -13,25 +14,27 @@ import time
 from typing import Optional, Tuple, Generator
 from dataclasses import dataclass
 
+logger = logging.getLogger(__name__)
+
 try:
     from core.log import log
 except ImportError:
     # 独立运行时的回退
     class _Fallback:
         @staticmethod
-        def debug(msg): pass
+        def debug(msg): logger.debug(msg)
         @staticmethod
-        def info(msg): print(msg)
+        def info(msg): logger.info(msg)
         @staticmethod
-        def warn(msg): print(msg)
+        def warn(msg): logger.warning(msg)
         @staticmethod
-        def error(msg): print(msg)
+        def error(msg): logger.error(msg)
         @staticmethod
-        def tts(msg): print(msg)
+        def tts(msg): logger.info(msg)
         @staticmethod
-        def tts_debug(msg): pass
+        def tts_debug(msg): logger.debug(msg)
         @staticmethod
-        def tts_segment(msg): print(msg)
+        def tts_segment(msg): logger.info(msg)
     log = _Fallback()
 
 
@@ -387,12 +390,12 @@ if __name__ == "__main__":
     client = create_remote_tts("http://localhost:5001")
     
     if client.health_check():
-        print("TTS 服务可用")
-        
+        logger.info("TTS 服务可用")
+
         # 测试同步生成
         result = client.generate_audio("你好，这是测试")
         if result:
             audio, sr = result
-            print(f"生成成功: {len(audio)/sr:.2f}s")
+            logger.info(f"生成成功: {len(audio)/sr:.2f}s")
     else:
-        print("TTS 服务不可用")
+        logger.info("TTS 服务不可用")

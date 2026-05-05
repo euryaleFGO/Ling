@@ -2,8 +2,11 @@
 Chroma 向量数据库客户端
 用于 RAG 检索
 """
+import logging
 import os
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # 项目根目录（从 src/backend/llm/database/chroma_client.py 向上4级）
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -16,14 +19,12 @@ try:
     import chromadb
     from chromadb.config import Settings
     from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2
-except Exception:  # 依赖可能因网络/代理无法安装
+except Exception as e:  # 依赖可能因网络/代理无法安装
+    logger.warning(f"Failed to import chromadb dependencies, vector search will be unavailable: {e}")
     chromadb = None
     Settings = None
     ONNXMiniLM_L6_V2 = object
 from typing import Optional, List, Dict, Any
-import logging
-
-logger = logging.getLogger(__name__)
 
 
 class LocalONNXMiniLM(ONNXMiniLM_L6_V2):

@@ -54,11 +54,6 @@ class WeWorkBotWebSocket:
         Args:
             config: 机器人配置
         """
-        print("=" * 60)
-        print("🤖 初始化企业微信机器人...")
-        print(f"   Bot ID: {config.bot_id}")
-        print(f"   WebSocket URL: {config.ws_url}")
-        print("=" * 60)
         logger.info("=" * 60)
         logger.info("🤖 初始化企业微信机器人...")
         logger.info(f"   Bot ID: {config.bot_id}")
@@ -89,16 +84,11 @@ class WeWorkBotWebSocket:
         self.on_message_callback: Optional[Callable] = None
         self.on_event_callback: Optional[Callable] = None
         
-        print("✅ 企业微信机器人初始化完成")
         logger.info("✅ 企业微信机器人初始化完成")
     
     async def connect(self):
         """建立 WebSocket 连接"""
         try:
-            print("=" * 60)
-            print(f"🔌 正在连接到企业微信 WebSocket...")
-            print(f"   URL: {self.config.ws_url}")
-            print("=" * 60)
             logger.info("=" * 60)
             logger.info(f"🔌 正在连接到企业微信 WebSocket...")
             logger.info(f"   URL: {self.config.ws_url}")
@@ -112,24 +102,17 @@ class WeWorkBotWebSocket:
             )
             
             self.connected = True
-            print("✅ WebSocket 连接建立成功")
             logger.info("✅ WebSocket 连接建立成功")
 
             # 发送订阅请求
-            print("📡 正在发送订阅请求...")
             logger.info("📡 正在发送订阅请求...")
             await self._subscribe()
 
             # 启动心跳
-            print("💓 启动心跳保活...")
             logger.info("💓 启动心跳保活...")
             self.heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
             # 开始接收消息
-            print("👂 开始监听消息...")
-            print("=" * 60)
-            print("✅ 企业微信机器人已就绪，等待消息...")
-            print("=" * 60)
             logger.info("👂 开始监听消息...")
             logger.info("=" * 60)
             logger.info("✅ 企业微信机器人已就绪，等待消息...")
@@ -137,7 +120,6 @@ class WeWorkBotWebSocket:
             await self._receive_loop()
             
         except Exception as e:
-            print(f"❌ WebSocket 连接失败: {e}")
             logger.error(f"❌ WebSocket 连接失败: {e}")
             self.connected = False
             raise
@@ -158,7 +140,6 @@ class WeWorkBotWebSocket:
                 }
             }
             
-            print("📡 发送订阅请求...")
             logger.info("📡 发送订阅请求...")
             await self.ws.send(json.dumps(subscribe_msg))
 
@@ -168,16 +149,13 @@ class WeWorkBotWebSocket:
 
             if resp_data.get("errcode") == 0:
                 self.subscribed = True
-                print("✅ 订阅成功！")
                 logger.info("✅ 订阅成功！")
             else:
                 error_msg = resp_data.get("errmsg", "Unknown error")
-                print(f"❌ 订阅失败: {error_msg}")
                 logger.error(f"❌ 订阅失败: {error_msg}")
                 raise Exception(f"订阅失败: {error_msg}")
 
         except Exception as e:
-            print(f"❌ 订阅请求失败: {e}")
             logger.error(f"❌ 订阅请求失败: {e}")
             raise
     
@@ -214,10 +192,6 @@ class WeWorkBotWebSocket:
                     data = json.loads(message)
                     
                     # 【新增】打印接收到的原始消息
-                    print("=" * 60)
-                    print("📥 收到 WebSocket 消息:")
-                    print(json.dumps(data, ensure_ascii=False, indent=2))
-                    print("=" * 60)
                     logger.info("=" * 60)
                     logger.info("📥 收到 WebSocket 消息:")
                     logger.info(json.dumps(data, ensure_ascii=False, indent=2))
@@ -225,20 +199,15 @@ class WeWorkBotWebSocket:
                     
                     await self._handle_message(data)
                 except json.JSONDecodeError as e:
-                    print(f"❌ JSON 解析失败: {e}")
                     logger.error(f"❌ JSON 解析失败: {e}")
                 except Exception as e:
-                    print(f"❌ 处理消息失败: {e}")
                     logger.error(f"❌ 处理消息失败: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    logger.exception("处理消息时发生异常")
                     
         except websockets.exceptions.ConnectionClosed:
-            print("⚠️  WebSocket 连接已关闭")
             logger.warning("⚠️  WebSocket 连接已关闭")
             self.connected = False
         except Exception as e:
-            print(f"❌ 接收消息失败: {e}")
             logger.error(f"❌ 接收消息失败: {e}")
             self.connected = False
     
@@ -273,12 +242,6 @@ class WeWorkBotWebSocket:
             chatid = body.get("chatid", "")
             chattype = body.get("chattype", "single")
             
-            print("=" * 60)
-            print(f"💬 收到消息:")
-            print(f"   类型: {msgtype}")
-            print(f"   用户: {user_name} ({user_id})")
-            print(f"   会话: {chattype} ({chatid})")
-            print(f"   请求ID: {req_id}")
             logger.info("=" * 60)
             logger.info(f"💬 收到消息:")
             logger.info(f"   类型: {msgtype}")
@@ -292,9 +255,6 @@ class WeWorkBotWebSocket:
                 content = text_data.get("content", "").strip()
                 mentioned_list = text_data.get("mentioned_list", [])  # @ 提及列表
                 
-                print(f"   内容: {content}")
-                print(f"   @ 列表: {mentioned_list}")
-                print("=" * 60)
                 logger.info(f"   内容: {content}")
                 logger.info(f"   @ 列表: {mentioned_list}")
                 logger.info("=" * 60)
@@ -318,7 +278,6 @@ class WeWorkBotWebSocket:
                         bot_mentioned = True
                     
                     if not bot_mentioned:
-                        print(f"⏭️  群聊消息未 @ 机器人，忽略")
                         logger.info(f"⏭️  群聊消息未 @ 机器人，忽略")
                         return
                     
@@ -330,14 +289,11 @@ class WeWorkBotWebSocket:
                         if space_idx > 0:
                             content = content[space_idx + 1:].strip()
                     
-                    print(f"✅ 群聊用户 {user_name} @ 机器人: {content}")
                     logger.info(f"✅ 群聊用户 {user_name} @ 机器人: {content}")
                 else:
-                    print(f"✅ 单聊用户 {user_name} 发送: {content}")
                     logger.info(f"✅ 单聊用户 {user_name} 发送: {content}")
                 
                 # 获取或创建 Agent
-                print(f"🤖 正在为用户 {user_id} 生成回复...")
                 logger.info(f"🤖 正在为用户 {user_id} 生成回复...")
                 agent = self._get_user_agent(user_id)
                 
@@ -346,8 +302,6 @@ class WeWorkBotWebSocket:
             
             # 处理其他消息类型
             elif msgtype in ["image", "file", "voice", "video"]:
-                print(f"   类型: {msgtype} (暂不支持)")
-                print("=" * 60)
                 logger.info(f"   类型: {msgtype} (暂不支持)")
                 logger.info("=" * 60)
                 await self._send_text_response(
@@ -356,10 +310,8 @@ class WeWorkBotWebSocket:
                 )
             
         except Exception as e:
-            print(f"❌ 处理消息回调失败: {e}")
             logger.error(f"❌ 处理消息回调失败: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception("处理消息回调时发生异常")
     
     async def _handle_event_callback(self, data: Dict[str, Any]):
         """处理事件回调"""
@@ -371,7 +323,6 @@ class WeWorkBotWebSocket:
             event = body.get("event", {})
             eventtype = event.get("eventtype", "")
             
-            print(f"📨 收到事件回调: {eventtype}")
             logger.info(f"📨 收到事件回调: {eventtype}")
             
             # 进入会话事件
@@ -380,18 +331,15 @@ class WeWorkBotWebSocket:
             
             # 模板卡片事件
             elif eventtype == "template_card_event":
-                print("📨 收到模板卡片事件")
                 logger.info("📨 收到模板卡片事件")
                 # 可以更新卡片
             
             # 连接断开事件
             elif eventtype == "disconnected_event":
-                print("⚠️  收到连接断开事件，旧连接被新连接踢掉")
                 logger.warning("⚠️  收到连接断开事件，旧连接被新连接踢掉")
                 self.connected = False
             
         except Exception as e:
-            print(f"❌ 处理事件回调失败: {e}")
             logger.error(f"❌ 处理事件回调失败: {e}")
     
     async def _send_welcome_message(self, req_id: str):
@@ -411,11 +359,9 @@ class WeWorkBotWebSocket:
             }
             
             await self.ws.send(json.dumps(welcome_msg))
-            print("📨 发送欢迎消息")
             logger.info("📨 发送欢迎消息")
             
         except Exception as e:
-            print(f"❌ 发送欢迎消息失败: {e}")
             logger.error(f"❌ 发送欢迎消息失败: {e}")
     
     async def _send_text_response(self, req_id: str, content: str):
@@ -435,11 +381,9 @@ class WeWorkBotWebSocket:
             }
             
             await self.ws.send(json.dumps(response_msg))
-            print(f"📤 发送回复: {content[:50]}...")
             logger.info(f"📤 发送回复: {content[:50]}...")
             
         except Exception as e:
-            print(f"❌ 发送文本回复失败: {e}")
             logger.error(f"❌ 发送文本回复失败: {e}")
     
     async def _send_stream_response(
@@ -499,7 +443,6 @@ class WeWorkBotWebSocket:
                     finish=True
                 )
                 
-                print(f"✅ 回复完成: {full_response[:80]}...")
                 logger.info(f"✅ 回复完成: {full_response[:100]}...")
                 
                 # 【新增】保存对话到数据库
@@ -515,7 +458,6 @@ class WeWorkBotWebSocket:
                     logger.warning(f"保存对话失败: {save_error}")
                 
             except Exception as e:
-                print(f"❌ Agent 生成回复失败: {e}")
                 logger.error(f"❌ Agent 生成回复失败: {e}")
                 await self._send_stream_chunk(
                     req_id,
@@ -529,7 +471,6 @@ class WeWorkBotWebSocket:
                 del self.stream_sessions[stream_id]
                 
         except Exception as e:
-            print(f"❌ 发送流式回复失败: {e}")
             logger.error(f"❌ 发送流式回复失败: {e}")
     
     async def _send_stream_chunk(
@@ -560,13 +501,6 @@ class WeWorkBotWebSocket:
             
             # 【新增】打印发送的消息（只在完成时打印完整内容）
             if finish:
-                print("=" * 60)
-                print("📤 发送流式消息 (完成):")
-                print(f"   请求ID: {req_id}")
-                print(f"   流ID: {stream_id}")
-                print(f"   内容: {content[:200]}{'...' if len(content) > 200 else ''}")
-                print(f"   完整长度: {len(content)} 字符")
-                print("=" * 60)
                 logger.info("=" * 60)
                 logger.info("📤 发送流式消息 (完成):")
                 logger.info(f"   请求ID: {req_id}")
@@ -578,7 +512,6 @@ class WeWorkBotWebSocket:
                 logger.debug(f"📤 发送流式消息块: finish={finish}, len={len(content)}")
 
         except Exception as e:
-            print(f"❌ 发送流式消息块失败: {e}")
             logger.error(f"❌ 发送流式消息块失败: {e}")
     
     async def send_message(
@@ -623,19 +556,14 @@ class WeWorkBotWebSocket:
                 }
             
             await self.ws.send(json.dumps(send_msg))
-            print(f"📤 主动推送消息到 {chatid}")
             logger.info(f"📤 主动推送消息到 {chatid}")
             
         except Exception as e:
-            print(f"❌ 主动推送消息失败: {e}")
             logger.error(f"❌ 主动推送消息失败: {e}")
     
     def _get_user_agent(self, user_id: str) -> Agent:
         """获取或创建用户的 Agent 实例"""
         if user_id not in self.user_agents:
-            print("=" * 60)
-            print(f"🆕 为用户 {user_id} 创建新的 Agent 会话...")
-            print("   正在初始化 Agent（可能需要加载模型，请稍候）...")
             logger.info("=" * 60)
             logger.info(f"🆕 为用户 {user_id} 创建新的 Agent 会话...")
             logger.info("   正在初始化 Agent（可能需要加载模型，请稍候）...")
@@ -646,13 +574,10 @@ class WeWorkBotWebSocket:
                 enable_tools=True
             )
 
-            print("   Agent 创建完成，正在启动会话...")
             logger.info("   Agent 创建完成，正在启动会话...")
             agent.start_chat()
 
             self.user_agents[user_id] = agent
-            print(f"✅ 用户 {user_id} 的 Agent 会话已就绪")
-            print("=" * 60)
             logger.info(f"✅ 用户 {user_id} 的 Agent 会话已就绪")
             logger.info("=" * 60)
         
@@ -681,11 +606,9 @@ class WeWorkBotWebSocket:
             if self.ws:
                 await self.ws.close()
             
-            print("🔌 WebSocket 连接已断开")
             logger.info("🔌 WebSocket 连接已断开")
 
         except Exception as e:
-            print(f"❌ 断开连接失败: {e}")
             logger.error(f"❌ 断开连接失败: {e}")
     
     async def run_async(self):
@@ -699,16 +622,13 @@ class WeWorkBotWebSocket:
                 reconnect_attempts = 0  # 重置重连次数
                 
             except Exception as e:
-                print(f"❌ 连接失败: {e}")
                 logger.error(f"❌ 连接失败: {e}")
 
                 if reconnect_attempts >= self.config.max_reconnect_attempts:
-                    print("❌ 达到最大重连次数，停止重连")
                     logger.error("❌ 达到最大重连次数，停止重连")
                     break
 
                 reconnect_attempts += 1
-                print(f"⏳ 等待 {self.config.reconnect_delay} 秒后重连... (尝试 {reconnect_attempts}/{self.config.max_reconnect_attempts})")
                 logger.info(f"⏳ 等待 {self.config.reconnect_delay} 秒后重连... (尝试 {reconnect_attempts}/{self.config.max_reconnect_attempts})")
                 await asyncio.sleep(self.config.reconnect_delay)
     
@@ -725,14 +645,12 @@ class WeWorkBotWebSocket:
         thread = threading.Thread(target=run_in_thread, daemon=True)
         thread.start()
         
-        print("🚀 企业微信机器人已在后台启动")
         logger.info("🚀 企业微信机器人已在后台启动")
         
         # 等待线程
         try:
             thread.join()
         except KeyboardInterrupt:
-            print("👋 用户中断，正在关闭...")
             logger.info("👋 用户中断，正在关闭...")
             self.running = False
             if self.loop:
@@ -758,9 +676,6 @@ def main():
     secret = args.secret or os.getenv("WEWORK_SECRET", "")
     
     if not bot_id or not secret:
-        print("❌ 缺少必要配置: bot_id 和 secret")
-        print("请设置环境变量 WEWORK_BOT_ID 和 WEWORK_SECRET")
-        print("或使用参数: --bot-id <BOT_ID> --secret <SECRET>")
         logger.error("❌ 缺少必要配置: bot_id 和 secret")
         logger.error("请设置环境变量 WEWORK_BOT_ID 和 WEWORK_SECRET")
         logger.error("或使用参数: --bot-id <BOT_ID> --secret <SECRET>")
@@ -775,12 +690,6 @@ def main():
     # 创建并启动机器人
     bot = WeWorkBotWebSocket(config)
     
-    print("=" * 60)
-    print("企业微信机器人 WebSocket 长连接版本")
-    print("=" * 60)
-    print(f"Bot ID: {bot_id}")
-    print(f"WebSocket URL: {config.ws_url}")
-    print("=" * 60)
     logger.info("=" * 60)
     logger.info("企业微信机器人 WebSocket 长连接版本")
     logger.info("=" * 60)

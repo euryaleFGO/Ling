@@ -2,7 +2,10 @@
 设置管理主窗口
 左侧导航栏 + 右侧内容区
 """
+import logging
 import sys
+
+logger = logging.getLogger(__name__)
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, 
@@ -90,7 +93,7 @@ class MainWindow(QMainWindow):
                     host = (page.mongo_host.text() or 'localhost').strip()
                     port = int((page.mongo_port.text() or '27017').strip())
             except Exception:
-                pass
+                logger.warning("Failed to read MongoDB host/port from database page, using defaults")
             
             # 只处理本地 MongoDB
             if host not in ("localhost", "127.0.0.1") or port != 27017:
@@ -124,12 +127,13 @@ class MainWindow(QMainWindow):
                         except subprocess.CalledProcessError:
                             break
                 except Exception:
+                    logger.debug("Failed to query service '%s', trying next", name)
                     continue
 
             # 如果没有服务或服务启动失败，直接启动 MongoDB 进程
             self._start_mongodb_process()
         except Exception:
-            pass
+            logger.error("Failed to ensure MongoDB service is running", exc_info=True)
 
     def _is_mongodb_running(self):
         """检查 MongoDB 是否在运行（通过进程和端口）"""
@@ -144,6 +148,7 @@ class MainWindow(QMainWindow):
                     if ":" in host_port:
                         expected_port = int(host_port.rsplit(":", 1)[1])
             except Exception:
+                logger.debug("Failed to parse MongoDB port from settings, using default 27017")
                 expected_port = 27017
 
             # 检查进程
@@ -164,7 +169,7 @@ class MainWindow(QMainWindow):
                 if f":{expected_port}" in port_check.stdout and "LISTENING" in port_check.stdout:
                     return True
         except Exception:
-            pass
+            logger.debug("Failed to check if MongoDB is running", exc_info=True)
         return False
 
     def _start_mongodb_process(self):
@@ -193,7 +198,7 @@ class MainWindow(QMainWindow):
                 if self._is_mongodb_running():
                     return
         except Exception:
-            pass
+            logger.error("Failed to start MongoDB process", exc_info=True)
     
     def create_sidebar(self) -> QWidget:
         """创建左侧导航栏"""
@@ -293,7 +298,7 @@ class MainWindow(QMainWindow):
                 try:
                     self.pages['database'].check_connection()
                 except Exception:
-                    pass
+                    logger.warning("Failed to check database connection on page switch")
 
 
 def main():

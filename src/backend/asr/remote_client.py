@@ -4,6 +4,7 @@
 通过 HTTP API 调用远程/云端 ASR 服务
 """
 
+import logging
 import requests
 import base64
 import numpy as np
@@ -13,19 +14,21 @@ import time
 from typing import Optional
 from dataclasses import dataclass
 
+logger = logging.getLogger(__name__)
+
 try:
     from core.log import log
 except ImportError:
     # 独立运行时的回退
     class _Fallback:
         @staticmethod
-        def debug(msg): pass
+        def debug(msg): logger.debug(msg)
         @staticmethod
-        def info(msg): print(msg)
+        def info(msg): logger.info(msg)
         @staticmethod
-        def warn(msg): print(msg)
+        def warn(msg): logger.warning(msg)
         @staticmethod
-        def error(msg): print(msg)
+        def error(msg): logger.error(msg)
     log = _Fallback()
 
 
@@ -242,11 +245,11 @@ if __name__ == "__main__":
     client = create_remote_asr("http://localhost:5002")
     
     if client.health_check():
-        print("ASR 服务可用")
-        
+        logger.info("ASR 服务可用")
+
         # 测试识别（需要准备测试音频）
         # test_audio = np.random.randn(16000).astype(np.float32)  # 1秒测试音频
         # result = client.recognize_audio(test_audio, 16000)
-        # print(f"识别结果: {result}")
+        # logger.info(f"识别结果: {result}")
     else:
-        print("ASR 服务不可用")
+        logger.info("ASR 服务不可用")

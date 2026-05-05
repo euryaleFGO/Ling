@@ -4,10 +4,13 @@ VAD (Voice Activity Detection) 工具
 简化自 FunASR runtime/python/onnxruntime/funasr_onnx/utils/e2e_vad.py
 """
 
+import logging
 import math
 from enum import Enum
 from typing import List, Dict, Any
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 class VadStateMachine(Enum):
@@ -378,7 +381,7 @@ class E2EVadModel:
     def OnVoiceStart(self, start_frame: int, fake_result: bool = False) -> None:
         """语音开始"""
         if self.confirmed_start_frame != -1:
-            print("警告: VAD 未正确重置")
+            logger.warning("VAD 未正确重置")
         else:
             self.confirmed_start_frame = start_frame
 
@@ -394,7 +397,7 @@ class E2EVadModel:
             self.OnVoiceDetected(t)
         
         if self.confirmed_end_frame != -1:
-            print("警告: VAD 未正确重置")
+            logger.warning("VAD 未正确重置")
         else:
             self.confirmed_end_frame = end_frame
         

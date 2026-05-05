@@ -332,13 +332,12 @@ def main():
     
     args = parser.parse_args()
     
-    print("=" * 60)
-    print("        企业微信应用机器人 - 玲 (Liying)")
-    print("=" * 60)
-    print(f"Bot ID: {args.bot_id}")
-    print(f"服务器地址: http://{args.host}:{args.port}")
-    print(f"Webhook 地址: http://{args.host}:{args.port}/webhook")
-    print()
+    logger.info("=" * 60)
+    logger.info("        企业微信应用机器人 - 玲 (Liying)")
+    logger.info("=" * 60)
+    logger.info(f"Bot ID: {args.bot_id}")
+    logger.info(f"服务器地址: http://{args.host}:{args.port}")
+    logger.info(f"Webhook 地址: http://{args.host}:{args.port}/webhook")
     
     # 创建 Flask 应用
     app, bot = create_flask_app(
@@ -352,12 +351,12 @@ def main():
     try:
         app.run(host=args.host, port=args.port, debug=False)
     except KeyboardInterrupt:
-        print("\n用户中断，正在关闭服务器...")
+        logger.info("\n用户中断，正在关闭服务器...")
         bot.stop()
     except Exception as e:
-        print(f"启动失败: {e}")
+        logger.error(f"启动失败: {e}")
         import traceback
-        traceback.print_exc()
+        logger.error(traceback.format_exc())
 
 
 if __name__ == "__main__":

@@ -502,7 +502,8 @@ class SpeakerDiarizer:
         try:
             # SVEngine 内部会做 float32 与归一化
             return self.sv.embed(seg_audio, sample_rate=sr)
-        except Exception:
+        except Exception as e:
+            log.debug(f"Failed to extract embedding from segment, skipping: {e}")
             return None
 
     def _vad_segments(self, audio: np.ndarray, sr: int) -> Tuple[List[Tuple[int, int]], str]:
@@ -521,8 +522,8 @@ class SpeakerDiarizer:
                     segments.append((s, e))
             segments = self._merge_close_segments(segments, sr, max_gap_sec=self.energy_min_silence_sec)
             return segments, "silero"
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"silero-vad not available or failed, falling back to energy VAD: {e}")
 
         # 2) fallback：能量门限切分
         segments = self._energy_vad(audio, sr)

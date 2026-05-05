@@ -4,6 +4,7 @@
 整合图像描述、目标检测、文字识别，输出结构化上下文给 LLM
 """
 
+import logging
 import os
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -12,6 +13,8 @@ from enum import Enum
 
 import numpy as np
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 
 class VisionModule(Enum):
@@ -269,7 +272,7 @@ class VisionEngine:
                 elif module == VisionModule.VLM:
                     self._run_vlm(image, result)
             except Exception as e:
-                print(f"[Vision] {module.value} 执行失败: {e}")
+                logger.error(f"[Vision] {module.value} 执行失败: {e}")
         
         return result
 

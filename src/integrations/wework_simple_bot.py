@@ -295,34 +295,33 @@ def main():
     agent_id = args.agent_id or os.getenv("WEWORK_AGENT_ID", "1000002")
     
     if not corp_id or not corp_secret:
-        print("❌ 错误: 缺少必需的配置")
-        print("请设置环境变量或使用命令行参数:")
-        print("  WEWORK_CORP_ID=你的企业ID")
-        print("  WEWORK_CORP_SECRET=你的应用密钥")
+        logger.error("❌ 错误: 缺少必需的配置")
+        logger.info("请设置环境变量或使用命令行参数:")
+        logger.info("  WEWORK_CORP_ID=你的企业ID")
+        logger.info("  WEWORK_CORP_SECRET=你的应用密钥")
         return
-    
-    print("=" * 60)
-    print("        企业微信机器人 - 简化版")
-    print("=" * 60)
-    print(f"企业 ID: {corp_id}")
-    print(f"应用 ID: {agent_id}")
-    print(f"服务器地址: http://{args.host}:{args.port}")
-    print(f"Webhook 地址: http://{args.host}:{args.port}/webhook")
-    print()
+
+    logger.info("=" * 60)
+    logger.info("        企业微信机器人 - 简化版")
+    logger.info("=" * 60)
+    logger.info(f"企业 ID: {corp_id}")
+    logger.info(f"应用 ID: {agent_id}")
+    logger.info(f"服务器地址: http://{args.host}:{args.port}")
+    logger.info(f"Webhook 地址: http://{args.host}:{args.port}/webhook")
     
     # 创建并启动应用
     try:
         app, bot = create_flask_app(corp_id, corp_secret, agent_id)
         
-        print("🚀 启动企业微信机器人...")
+        logger.info("🚀 启动企业微信机器人...")
         app.run(host=args.host, port=args.port, debug=False, threaded=True)
-        
+
     except KeyboardInterrupt:
-        print("\n用户中断，正在关闭服务器...")
+        logger.info("\n用户中断，正在关闭服务器...")
     except Exception as e:
-        print(f"启动失败: {e}")
+        logger.error(f"启动失败: {e}")
         import traceback
-        traceback.print_exc()
+        logger.error(traceback.format_exc())
 
 
 if __name__ == "__main__":

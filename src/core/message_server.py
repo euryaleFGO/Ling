@@ -43,7 +43,7 @@ try:
     HAS_WEBSOCKETS = True
 except ImportError:
     HAS_WEBSOCKETS = False
-    print("[MessageServer] ⚠ websockets 未安装，请运行: pip install websockets")
+    log.warning("[MessageServer] ⚠ websockets 未安装，请运行: pip install websockets")
 
 
 # ==================================================================
@@ -150,7 +150,7 @@ class WebSocketServer:
     def start(self):
         """在后台线程中启动 WebSocket 服务"""
         if not HAS_WEBSOCKETS:
-            print("[MessageServer] 无法启动：websockets 未安装")
+            log.error("[MessageServer] 无法启动：websockets 未安装")
             return
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="WebSocketServer"
@@ -282,21 +282,21 @@ if __name__ == "__main__":
 
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
 
-    print("=" * 60)
-    print("[MessageServer] 启动信息")
-    print("=" * 60)
-    print(f"  Python: {sys.executable}")
-    print(f"  版本:   {sys.version}")
-    print(f"  工作目录: {os.getcwd()}")
-    print("=" * 60)
+    log.info("=" * 60)
+    log.info("[MessageServer] 启动信息")
+    log.info("=" * 60)
+    log.info(f"  Python: {sys.executable}")
+    log.info(f"  版本:   {sys.version}")
+    log.info(f"  工作目录: {os.getcwd()}")
+    log.info("=" * 60)
     sys.stdout.flush()
 
     if not HAS_WEBSOCKETS:
-        print("[MessageServer] 错误：请先安装 websockets 库")
-        print("  pip install websockets")
+        log.error("[MessageServer] 错误：请先安装 websockets 库")
+        log.error("  pip install websockets")
         sys.exit(1)
 
-    print(f"[MessageServer] 正在启动 WebSocket 服务 (端口 {port})...")
+    log.info(f"[MessageServer] 正在启动 WebSocket 服务 (端口 {port})...")
     sys.stdout.flush()
     start_server(port)
 
@@ -306,6 +306,6 @@ if __name__ == "__main__":
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        print("\n[MessageServer] 收到中断信号，正在关闭...")
+        log.info("\n[MessageServer] 收到中断信号，正在关闭...")
         if _server:
             _server.stop()

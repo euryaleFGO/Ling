@@ -2,7 +2,10 @@
 数据库管理页面 - 增强版
 支持对话记录查看、记忆管理、搜索等功能
 """
+import logging
 import sys
+
+logger = logging.getLogger(__name__)
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
@@ -373,6 +376,7 @@ class DatabasePage(QWidget):
                 collection = client.get_or_create_collection("liying_memories")
                 stats.append(("向量数据", collection.count()))
             except Exception:
+                logger.debug("Failed to get vector data count from Chroma, reporting N/A")
                 stats.append(("向量数据", "N/A"))
             
             self.detail_stats_table.setRowCount(len(stats))
@@ -757,7 +761,7 @@ class DatabasePage(QWidget):
                 try:
                     client.delete_collection("liying_memories")
                 except Exception:
-                    pass
+                    logger.debug("Chroma collection 'liying_memories' may not exist, ignoring delete error")
                 QMessageBox.information(self, "成功", "向量数据库已清空")
                 self.load_data()
             except Exception as e:
@@ -799,7 +803,7 @@ class DatabasePage(QWidget):
                         client = get_chroma_client()
                         client.delete_collection("liying_memories")
                     except Exception:
-                        pass
+                        logger.debug("Chroma collection 'liying_memories' may not exist, ignoring delete error during reset")
 
                     QMessageBox.information(self, "成功", "所有数据已重置")
                     self.load_data()

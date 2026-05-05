@@ -4,11 +4,14 @@ FSMN-VAD 语音活动检测模型
 简化自 FunASR runtime/python/onnxruntime/funasr_onnx/vad_bin.py
 """
 
+import logging
 import os
 from pathlib import Path
 from typing import List, Union, Tuple, Dict
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 try:
     import librosa
@@ -147,7 +150,7 @@ class FsmnVAD:
                             segments[batch_num] += segments_part[batch_num]
 
             except Exception as e:
-                print(f"VAD 检测失败: {e}")
+                logger.error(f"VAD 检测失败: {e}")
                 segments = []
 
         return segments
@@ -302,9 +305,9 @@ class FsmnVADOnline:
                     scores, waveforms, is_final=is_final, max_end_sil=self.max_end_sil, online=True
                 )
             except Exception as e:
-                print(f"VAD 检测失败: {e}")
+                logger.error(f"VAD 检测失败: {e}")
                 segments = []
-        
+
         param_dict.update({"frontend": frontend, "vad_scorer": vad_scorer})
         return segments
 

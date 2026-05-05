@@ -13,10 +13,13 @@ SER (Speech Emotion Recognition) - 语音情绪识别
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 
@@ -87,14 +90,16 @@ class SEREngine:
                     if ":" in req:
                         return int(req.split(":", 1)[1])
                     return 0
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Failed to check CUDA availability for explicit device request, falling back to cpu: {e}")
                 return -1
             return -1
         # auto
         try:
             import torch
             return 0 if torch.cuda.is_available() else -1
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to import torch or check CUDA availability, falling back to cpu: {e}")
             return -1
 
     def _ensure_pipe(self):

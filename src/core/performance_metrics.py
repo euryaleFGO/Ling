@@ -6,10 +6,13 @@
 """
 
 import time
+import logging
 from dataclasses import dataclass, field
 from typing import Optional, List
 from collections import deque
 import statistics
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -300,53 +303,53 @@ class PerformanceMonitor:
         """打印性能摘要"""
         summary = self.get_summary()
         
-        print("\n" + "=" * 60)
-        print("性能监控摘要")
-        print("=" * 60)
-        
-        print(f"\n总体统计:")
-        print(f"  - 总对话轮次: {summary['total_turns']}")
-        print(f"  - 总打断次数: {summary['total_interrupts']}")
-        print(f"  - ASR 调用: {summary['total_asr_calls']}")
-        print(f"  - TTS 调用: {summary['total_tts_calls']}")
-        print(f"  - 声纹识别: {summary['total_speaker_calls']}")
-        
+        logger.info("=" * 60)
+        logger.info("性能监控摘要")
+        logger.info("=" * 60)
+
+        logger.info("总体统计:")
+        logger.info("  - 总对话轮次: %s", summary['total_turns'])
+        logger.info("  - 总打断次数: %s", summary['total_interrupts'])
+        logger.info("  - ASR 调用: %s", summary['total_asr_calls'])
+        logger.info("  - TTS 调用: %s", summary['total_tts_calls'])
+        logger.info("  - 声纹识别: %s", summary['total_speaker_calls'])
+
         if summary.get('asr'):
             asr = summary['asr']
-            print(f"\nASR 性能:")
-            print(f"  - 首包延迟: {asr['first_chunk_latency']['avg']:.1f}ms (P95: {asr['first_chunk_latency']['p95']:.1f}ms)")
-            print(f"  - 总延迟: {asr['total_latency']['avg']:.1f}ms (P95: {asr['total_latency']['p95']:.1f}ms)")
-            print(f"  - RTF: {asr['rtf']['avg']:.3f}")
-        
+            logger.info("ASR 性能:")
+            logger.info("  - 首包延迟: %.1fms (P95: %.1fms)", asr['first_chunk_latency']['avg'], asr['first_chunk_latency']['p95'])
+            logger.info("  - 总延迟: %.1fms (P95: %.1fms)", asr['total_latency']['avg'], asr['total_latency']['p95'])
+            logger.info("  - RTF: %.3f", asr['rtf']['avg'])
+
         if summary.get('tts'):
             tts = summary['tts']
-            print(f"\nTTS 性能:")
-            print(f"  - 首包延迟: {tts['first_chunk_latency']['avg']:.1f}ms (P95: {tts['first_chunk_latency']['p95']:.1f}ms)")
-            print(f"  - 总延迟: {tts['total_latency']['avg']:.1f}ms (P95: {tts['total_latency']['p95']:.1f}ms)")
-            print(f"  - RTF: {tts['rtf']['avg']:.3f}")
-        
+            logger.info("TTS 性能:")
+            logger.info("  - 首包延迟: %.1fms (P95: %.1fms)", tts['first_chunk_latency']['avg'], tts['first_chunk_latency']['p95'])
+            logger.info("  - 总延迟: %.1fms (P95: %.1fms)", tts['total_latency']['avg'], tts['total_latency']['p95'])
+            logger.info("  - RTF: %.3f", tts['rtf']['avg'])
+
         if summary.get('speaker'):
             speaker = summary['speaker']
-            print(f"\n声纹识别性能:")
-            print(f"  - 延迟: {speaker['latency']['avg']:.1f}ms (P95: {speaker['latency']['p95']:.1f}ms)")
-            print(f"  - 缓存命中率: {speaker['cache_hit_rate']*100:.1f}%")
-        
+            logger.info("声纹识别性能:")
+            logger.info("  - 延迟: %.1fms (P95: %.1fms)", speaker['latency']['avg'], speaker['latency']['p95'])
+            logger.info("  - 缓存命中率: %.1f%%", speaker['cache_hit_rate'] * 100)
+
         if summary.get('interrupt'):
             interrupt = summary['interrupt']
-            print(f"\n打断性能:")
-            print(f"  - 响应时间: {interrupt['response_time']['avg']:.1f}ms (P95: {interrupt['response_time']['p95']:.1f}ms)")
-            print(f"  - 检测延迟: {interrupt['detection_latency']['avg']:.1f}ms")
-        
+            logger.info("打断性能:")
+            logger.info("  - 响应时间: %.1fms (P95: %.1fms)", interrupt['response_time']['avg'], interrupt['response_time']['p95'])
+            logger.info("  - 检测延迟: %.1fms", interrupt['detection_latency']['avg'])
+
         if summary.get('turn'):
             turn = summary['turn']
-            print(f"\nTurn 性能:")
-            print(f"  - 总延迟: {turn['total_latency']['avg']:.1f}ms (P95: {turn['total_latency']['p95']:.1f}ms)")
-            print(f"  - ASR 延迟: {turn['asr_latency']['avg']:.1f}ms")
-            print(f"  - LLM 首 token: {turn['llm_first_token']['avg']:.1f}ms")
-            print(f"  - TTS 首包: {turn['tts_first_chunk']['avg']:.1f}ms")
-            print(f"  - 打断率: {turn['interrupt_rate']*100:.1f}%")
-        
-        print("\n" + "=" * 60)
+            logger.info("Turn 性能:")
+            logger.info("  - 总延迟: %.1fms (P95: %.1fms)", turn['total_latency']['avg'], turn['total_latency']['p95'])
+            logger.info("  - ASR 延迟: %.1fms", turn['asr_latency']['avg'])
+            logger.info("  - LLM 首 token: %.1fms", turn['llm_first_token']['avg'])
+            logger.info("  - TTS 首包: %.1fms", turn['tts_first_chunk']['avg'])
+            logger.info("  - 打断率: %.1f%%", turn['interrupt_rate'] * 100)
+
+        logger.info("=" * 60)
     
     @staticmethod
     def _percentile(data: List[float], p: float) -> float:

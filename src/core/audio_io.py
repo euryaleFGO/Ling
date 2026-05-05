@@ -4,6 +4,7 @@
 处理麦克风输入和扬声器输出
 """
 
+import logging
 import sys
 import time
 import wave
@@ -16,18 +17,20 @@ from collections import deque
 
 import numpy as np
 
+logger = logging.getLogger(__name__)
+
 try:
     from core.log import log
 except ImportError:
     class _Fallback:
         @staticmethod
-        def debug(msg): pass
+        def debug(msg): logger.debug(msg)
         @staticmethod
-        def info(msg): print(msg)
+        def info(msg): logger.info(msg)
         @staticmethod
-        def warn(msg): print(msg)
+        def warn(msg): logger.warning(msg)
         @staticmethod
-        def error(msg): print(msg)
+        def error(msg): logger.error(msg)
     log = _Fallback()
 
 from core.vad import VADConfig, create_vad, VADBackend
@@ -381,7 +384,7 @@ class AudioOutput:
         
         def stream_callback(outdata, frames, time_info, status):
             if status:
-                print(f"[AudioIO] 播放状态: {status}")
+                logger.warning(f"[AudioIO] 播放状态: {status}")
             
             try:
                 chunk = self._play_queue.get_nowait()

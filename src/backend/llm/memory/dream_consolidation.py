@@ -434,4 +434,4 @@ if __name__ == "__main__":
     # 测试
     logging.basicConfig(level=logging.INFO)
     result = run_dream_consolidation()
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    logger.debug(json.dumps(result, indent=2, ensure_ascii=False))

@@ -533,6 +533,7 @@ class ConfigManager:
                 return True
             return False
         except Exception:
+            log.warn("Failed to check config file for updates")
             return False
 
     def reload_if_changed(self) -> bool:

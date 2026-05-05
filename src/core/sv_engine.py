@@ -10,10 +10,13 @@ Design goals:
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 
@@ -63,13 +66,15 @@ class SVEngine:
                 import torch
                 if torch.cuda.is_available():
                     return req
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Failed to check CUDA availability for explicit device request, falling back to cpu: {e}")
                 return "cpu"
             return "cpu"
         try:
             import torch
             return "cuda:0" if torch.cuda.is_available() else "cpu"
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to import torch or check CUDA availability, falling back to cpu: {e}")
             return "cpu"
 
     def _ensure_model(self):
@@ -126,7 +131,8 @@ class SVEngine:
             if hasattr(x, "detach") and hasattr(x, "cpu"):
                 try:
                     return np.asarray(x.detach().cpu().numpy(), dtype=np.float32).reshape(-1)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Failed to convert tensor to numpy embedding: {e}")
                     return None
             return None
 

@@ -16,9 +16,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 
@@ -49,9 +52,8 @@ class VoiceprintDatabase:
             try:
                 embedding = np.load(npy_file)
                 self._memory_index[speaker_id] = embedding
-            except Exception:
-                # 忽略损坏的文件
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to load voiceprint file {npy_file.name}, skipping corrupted file: {e}")
 
     def save_voiceprint(
         self,
@@ -90,7 +92,8 @@ class VoiceprintDatabase:
             self._memory_index[speaker_id] = embedding
             
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to save voiceprint for speaker '{speaker_id}': {e}")
             return False
 
     def load_voiceprint(self, speaker_id: str) -> Optional[np.ndarray]:
@@ -117,7 +120,8 @@ class VoiceprintDatabase:
             # 加载后更新内存索引
             self._memory_index[speaker_id] = embedding
             return embedding
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to load voiceprint from file for speaker '{speaker_id}': {e}")
             return None
 
     def find_best_match(
@@ -189,7 +193,8 @@ class VoiceprintDatabase:
                 del self._memory_index[speaker_id]
             
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to delete voiceprint for speaker '{speaker_id}': {e}")
             return False
 
     def export_voiceprint(self, speaker_id: str, output_path: Path) -> bool:
@@ -221,7 +226,8 @@ class VoiceprintDatabase:
                     json.dump(metadata, f, ensure_ascii=False, indent=2)
             
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to export voiceprint for speaker '{speaker_id}' to {output_path}: {e}")
             return False
 
     def import_voiceprint(self, input_path: Path, speaker_id: str) -> bool:
@@ -248,7 +254,8 @@ class VoiceprintDatabase:
             
             # 保存到数据库
             return self.save_voiceprint(speaker_id, embedding, metadata)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to import voiceprint from {input_path} for speaker '{speaker_id}': {e}")
             return False
 
     def load_metadata(self, speaker_id: str) -> Optional[Dict]:
@@ -268,5 +275,6 @@ class VoiceprintDatabase:
         try:
             with open(json_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to load metadata for speaker '{speaker_id}': {e}")
             return None

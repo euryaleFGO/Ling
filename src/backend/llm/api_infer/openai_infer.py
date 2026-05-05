@@ -1,7 +1,11 @@
+import logging
+import os
+from typing import List, Dict, Optional
+
 from openai import OpenAI
 from .config import DEEPSEEK_API_KEY, BASE_URL, MODEL
-from typing import List, Dict, Optional
-import os
+
+logger = logging.getLogger(__name__)
 
 class APIInfer:
     # 单次请求超时（秒），避免 API 无响应时长时间卡住（默认 600s）
@@ -76,7 +80,7 @@ if __name__ == "__main__":
         for res in response:
             result = res.choices[0].delta.content
             if result:
-                print(result,end="",flush=True)
-                
-        print("\n")
+                logger.debug(result)
+
+        logger.debug("")
         

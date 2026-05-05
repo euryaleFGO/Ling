@@ -387,7 +387,7 @@ class Launcher:
             except Exception as e:
                 log.error(f"对话系统启动失败: {e}")
                 import traceback
-                traceback.print_exc()
+                log.error(traceback.format_exc())
         
         # 在独立线程运行对话系统
         self._conversation_thread = threading.Thread(
@@ -531,7 +531,7 @@ class Launcher:
                                         log.debug(f"Live2D 进程已退出，退出码: {self.live2d_process.returncode}")
                                         break
                                     continue
-                                print(f"[Live2D] {line.rstrip()}")
+                                log.info(f"[Live2D] {line.rstrip()}")
                         except Exception as e:
                             log.debug(f"读取输出时出错: {e}")
                         finally:
@@ -550,13 +550,13 @@ class Launcher:
                     def monitor_process():
                         time.sleep(3)  # 等待3秒
                         if self.live2d_process.poll() is not None:
-                            print(f"[DEBUG] 警告：Live2D 进程在启动后立即退出，退出码: {self.live2d_process.returncode}")
+                            log.warning(f"[DEBUG] 警告：Live2D 进程在启动后立即退出，退出码: {self.live2d_process.returncode}")
                             # 尝试读取 stderr（虽然已经合并到 stdout，但以防万一）
                             try:
                                 if hasattr(self.live2d_process, 'stderr') and self.live2d_process.stderr:
                                     stderr_content = self.live2d_process.stderr.read()
                                     if stderr_content:
-                                        print(f"[DEBUG] 错误输出:\n{stderr_content}")
+                                        log.error(f"[DEBUG] 错误输出:\n{stderr_content}")
                             except (OSError, ValueError):
                                 pass
 
@@ -602,13 +602,13 @@ class Launcher:
                 if self.debug_mode:
                     time.sleep(2)
                     if self.live2d_process.poll() is not None:
-                        print(f"[DEBUG] 警告：Live2D 进程已退出，退出码: {self.live2d_process.returncode}")
+                        log.warning(f"[DEBUG] 警告：Live2D 进程已退出，退出码: {self.live2d_process.returncode}")
                         # 尝试读取剩余的错误信息
                         try:
                             if self.live2d_process.stdout:
                                 remaining_output = self.live2d_process.stdout.read()
                                 if remaining_output:
-                                    print(f"[DEBUG] 剩余输出:\n{remaining_output}")
+                                    log.debug(f"[DEBUG] 剩余输出:\n{remaining_output}")
                         except (OSError, ValueError):
                             pass
             except Exception as e:

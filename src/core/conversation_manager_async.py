@@ -12,6 +12,7 @@
 
 import asyncio
 import contextlib
+import logging
 import re
 import threading
 import time
@@ -22,6 +23,8 @@ from pathlib import Path
 from typing import Optional, Callable
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 from core.audio_io import AudioInput, AudioOutput, AudioConfig
 from core.vad import VADConfig
@@ -1079,7 +1082,7 @@ class AsyncConversationManager:
                 if not self._should_submit(user_text):
                     continue
                 
-                print(f"\n👤 用户: {user_text}")
+                logger.info(f"\n👤 用户: {user_text}")
                 if self._on_user_text:
                     self._on_user_text(user_text)
                 
@@ -1097,7 +1100,7 @@ class AsyncConversationManager:
                         pass  # 被打断是正常的
                 
             except KeyboardInterrupt:
-                print("\n用户中断")
+                logger.info("\n用户中断")
                 break
             except Exception as e:
                 log.error(f"对话错误: {e}")
@@ -1197,5 +1200,5 @@ def start_async_conversation(
 
 
 if __name__ == "__main__":
-    print("启动异步对话管理器...")
+    logger.info("启动异步对话管理器...")
     start_async_conversation()

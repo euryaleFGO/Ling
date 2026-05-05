@@ -242,15 +242,15 @@ class TTSCache:
         """打印缓存统计信息"""
         stats = self.get_stats()
         
-        print("\n" + "=" * 60)
-        print("TTS 缓存统计")
-        print("=" * 60)
-        print(f"缓存大小: {stats['size']}/{stats['max_size']}")
-        print(f"总请求: {stats['total_requests']}")
-        print(f"命中: {stats['hits']}")
-        print(f"未命中: {stats['misses']}")
-        print(f"命中率: {stats['hit_rate']*100:.1f}%")
-        print("=" * 60)
+        log.info("\n" + "=" * 60)
+        log.info("TTS 缓存统计")
+        log.info("=" * 60)
+        log.info(f"缓存大小: {stats['size']}/{stats['max_size']}")
+        log.info(f"总请求: {stats['total_requests']}")
+        log.info(f"命中: {stats['hits']}")
+        log.info(f"未命中: {stats['misses']}")
+        log.info(f"命中率: {stats['hit_rate']*100:.1f}%")
+        log.info("=" * 60)
     
     def clear(self):
         """清空缓存"""

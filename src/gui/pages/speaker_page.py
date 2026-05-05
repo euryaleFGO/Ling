@@ -13,8 +13,11 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
+
+logger = logging.getLogger(__name__)
 from pathlib import Path
 
 from PyQt6.QtCore import Qt
@@ -51,6 +54,7 @@ class SpeakerPage(QWidget):
             s = AppSettings.load()
             self.model_dir = s.tts_model_dir
         except Exception:
+            logger.warning("Failed to load TTS model directory from AppSettings, using default path")
             self.model_dir = self.project_root / "models" / "TTS" / "CosyVoice2-0.5B"
         self.spk2info_path = self.model_dir / "spk2info.pt"
 
@@ -299,7 +303,7 @@ class SpeakerPage(QWidget):
                 QApplication = _QApp
                 QApplication.processEvents()
             except Exception:
-                pass
+                logger.debug("Failed to process Qt events during speaker registration")
 
             ok = tts.cosyvoice.add_zero_shot_spk(
                 prompt_text=prompt_text,

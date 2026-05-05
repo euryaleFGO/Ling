@@ -6,6 +6,7 @@ ASR 引擎 - 基于 FunASR AutoModel 的语音识别接口
 依赖：pip install funasr torch torchaudio
 """
 
+import logging
 import os
 import threading
 import contextlib
@@ -14,6 +15,8 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Union, Optional, Callable
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 try:
     import sounddevice as sd
@@ -191,7 +194,7 @@ class ASREngine:
                 "同时需要 torch 和 torchaudio: pip install torch torchaudio"
             )
 
-        print(f"[ASR] 加载模型: {self.config.model_dir}")
+        logger.info(f"[ASR] 加载模型: {self.config.model_dir}")
 
         # 流式模型：不加载 VAD（VAD + streaming 在 FunASR 中不兼容）
         self._model = AutoModel(
@@ -200,7 +203,7 @@ class ASREngine:
             disable_update=self.config.disable_update,
         )
         self._model_loaded = True
-        print("[ASR] 模型加载完成")
+        logger.info("[ASR] 模型加载完成")
 
     @contextlib.contextmanager
     def _quiet_generate(self):
@@ -242,12 +245,12 @@ class ASREngine:
             "disable_update": self.config.disable_update,
         }
         if self.config.use_vad and self.config.vad_model:
-            print(f"[ASR] VAD 模型: {self.config.vad_model}")
+            logger.info(f"[ASR] VAD 模型: {self.config.vad_model}")
             kwargs["vad_model"] = self.config.vad_model
             kwargs["vad_kwargs"] = {"max_single_segment_time": 60000}
 
         self._model_offline = AutoModel(**kwargs)
-        print("[ASR] 离线模型加载完成")
+        logger.info("[ASR] 离线模型加载完成")
 
     # ------------------------------------------------------------------
     #  离线识别
@@ -404,7 +407,7 @@ class ASREngine:
 
         def audio_callback(indata, frames, time_info, status):
             if status:
-                print(f"[ASR] 音频状态: {status}")
+                logger.warning(f"[ASR] 音频状态: {status}")
 
             audio = indata[:, 0].astype(np.float32)
             text = self.feed_audio(audio)
@@ -420,7 +423,7 @@ class ASREngine:
             callback=audio_callback,
         )
         self._mic_stream.start()
-        print("[ASR] 麦克风识别已启动")
+        logger.info("[ASR] 麦克风识别已启动")
 
     def stop_microphone(self) -> str:
         """
@@ -441,7 +444,7 @@ class ASREngine:
         if final_text and self._mic_callback:
             self._mic_callback(final_text, True)
 
-        print("[ASR] 麦克风识别已停止")
+        logger.info("[ASR] 麦克风识别已停止")
         return final_text
 
     # ------------------------------------------------------------------

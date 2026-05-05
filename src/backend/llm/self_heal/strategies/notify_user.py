@@ -26,7 +26,6 @@ class NotifyUserStrategy(FixStrategy):
     @staticmethod
     def _default_notifier(message: str) -> None:
         logger.warning("NOTIFY USER: %s", message)
-        print(f"[NOTIFY] {message}")
 
     def can_handle(self, event: Event) -> bool:
         """Always can handle — this is the fallback of last resort."""

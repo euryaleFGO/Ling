@@ -255,28 +255,27 @@ def main():
     
     args = parser.parse_args()
     
-    print("=" * 60)
-    print("        WebSocket 聊天机器人 - 玲 (Liying)")
-    print("=" * 60)
-    print(f"服务器地址: ws://{args.host}:{args.port}")
-    print("支持功能:")
-    print("  ✅ 实时对话")
-    print("  ✅ 流式回复")
-    print("  ✅ 多用户支持")
-    print("  ✅ 上下文记忆")
-    print("  ✅ 工具调用")
-    print()
+    logger.info("=" * 60)
+    logger.info("        WebSocket 聊天机器人 - 玲 (Liying)")
+    logger.info("=" * 60)
+    logger.info(f"服务器地址: ws://{args.host}:{args.port}")
+    logger.info("支持功能:")
+    logger.info("  ✅ 实时对话")
+    logger.info("  ✅ 流式回复")
+    logger.info("  ✅ 多用户支持")
+    logger.info("  ✅ 上下文记忆")
+    logger.info("  ✅ 工具调用")
     
     # 创建并启动机器人
     try:
         bot = WebSocketChatBot()
         bot.run(host=args.host, port=args.port)
     except KeyboardInterrupt:
-        print("\n用户中断，正在关闭服务器...")
+        logger.info("\n用户中断，正在关闭服务器...")
     except Exception as e:
-        print(f"启动失败: {e}")
+        logger.error(f"启动失败: {e}")
         import traceback
-        traceback.print_exc()
+        logger.error(traceback.format_exc())
 
 
 if __name__ == "__main__":

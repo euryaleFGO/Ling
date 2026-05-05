@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def _env_str(name: str, default: str) -> str:
@@ -16,7 +19,8 @@ def _env_int(name: str, default: int) -> int:
         return default
     try:
         return int(str(v).strip())
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to parse env var '{name}' as int (value={v!r}), using default {default}: {e}")
         return default
 
 

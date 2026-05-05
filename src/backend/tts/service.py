@@ -11,10 +11,13 @@ import json
 import base64
 import time
 import uuid
+import logging
 import threading
 from queue import Queue, Empty
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
+
+logger = logging.getLogger(__name__)
 
 # 设置路径
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # .../src/backend/tts
@@ -42,23 +45,23 @@ def init_tts(model_path: str = None, ref_audio: str = None):
         return True
     
     try:
-        print("[TTS服务] 正在初始化 TTS 引擎...")
+        logger.info("[TTS服务] 正在初始化 TTS 引擎...")
         
         # 使用提供的路径或默认路径
         model_path = model_path or DEFAULT_MODEL_PATH
         ref_audio = ref_audio or DEFAULT_REF_AUDIO
         
         if not os.path.exists(model_path):
-            print(f"[TTS服务] 错误：模型路径不存在：{model_path}")
+            logger.error(f"[TTS服务] 错误：模型路径不存在：{model_path}")
             return False
         
         if not os.path.exists(ref_audio):
-            print(f"[TTS服务] 警告：参考音频不存在：{ref_audio}，将使用默认音色")
+            logger.warning(f"[TTS服务] 警告：参考音频不存在：{ref_audio}，将使用默认音色")
             ref_audio = None
         
         # 4GB 显卡强制关闭 JIT 和 TRT
         tts_engine = CosyvoiceRealTimeTTS(model_path, ref_audio, load_jit=False, load_trt=False)
-        print("[TTS服务] TTS 引擎初始化成功")
+        logger.info("[TTS服务] TTS 引擎初始化成功")
         
         # 加载已保存的说话人信息（如果存在）
         spk2info_path = os.path.join(model_path, "spk2info.pt")
@@ -69,15 +72,15 @@ def init_tts(model_path: str = None, ref_audio: str = None):
                     spk2info_path,
                     map_location=tts_engine.cosyvoice.frontend.device
                 )
-                print(f"[TTS服务] 已加载 {len(tts_engine.cosyvoice.frontend.spk2info)} 个说话人")
+                logger.info(f"[TTS服务] 已加载 {len(tts_engine.cosyvoice.frontend.spk2info)} 个说话人")
             except Exception as e:
-                print(f"[TTS服务] 警告：加载说话人信息失败：{e}")
+                logger.warning(f"[TTS服务] 警告：加载说话人信息失败：{e}")
         
         return True
     except Exception as e:
-        print(f"[TTS服务] TTS 初始化失败：{e}")
+        logger.error(f"[TTS服务] TTS 初始化失败：{e}")
         import traceback
-        traceback.print_exc()
+        logger.error(traceback.format_exc())
         return False
 
 
@@ -244,7 +247,7 @@ def generate_tts():
         if not text:
             return jsonify({'error': '未提供文本内容'}), 400
         
-        print(f"[TTS服务] 收到请求：文本长度 {len(text)} 字符")
+        logger.info(f"[TTS服务] 收到请求：文本长度 {len(text)} 字符")
         
         # 生成音频
         if spk_id:
@@ -286,9 +289,9 @@ def generate_tts():
         })
         
     except Exception as e:
-        print(f"[TTS服务] 生成音频失败：{e}")
+        logger.error(f"[TTS服务] 生成音频失败：{e}")
         import traceback
-        traceback.print_exc()
+        logger.error(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
 
 @app.route('/tts/add_speaker', methods=['POST'])
@@ -352,9 +355,9 @@ def add_speaker_tts():
                 os.remove(temp_path)
         
     except Exception as e:
-        print(f"[TTS服务] 添加说话人失败：{e}")
+        logger.error(f"[TTS服务] 添加说话人失败：{e}")
         import traceback
-        traceback.print_exc()
+        logger.error(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
 
 @app.route('/audio/<filename>')
@@ -367,7 +370,7 @@ def serve_audio(filename):
             return jsonify({'error': '文件不存在'}), 404
         return send_from_directory(audio_dir, filename, mimetype='audio/wav')
     except Exception as e:
-        print(f"[TTS服务] 提供音频文件失败: {e}")
+        logger.error(f"[TTS服务] 提供音频文件失败: {e}")
         return jsonify({'error': '文件访问失败'}), 500
 
 @app.route('/tts/speakers', methods=['GET'])
@@ -405,9 +408,9 @@ if __name__ == '__main__':
     parser.add_argument('--ref-audio', default=None, help='参考音频路径')
     args = parser.parse_args()
     
-    print("=" * 60)
-    print("TTS 服务启动中...")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("TTS 服务启动中...")
+    logger.info("=" * 60)
     
     # 优先使用命令行参数，其次使用环境变量
     model_path = args.model or os.getenv('COSYVOICE_MODEL_PATH')
@@ -415,12 +418,12 @@ if __name__ == '__main__':
     
     # 在主线程中初始化 TTS
     if not init_tts(model_path, ref_audio):
-        print("[TTS服务] 警告：TTS 初始化失败，将在首次请求时重试")
+        logger.warning("[TTS服务] 警告：TTS 初始化失败，将在首次请求时重试")
     
     port = args.port or int(os.getenv('TTS_SERVICE_PORT', 5001))
-    print(f"[TTS服务] 服务运行在 http://{args.host}:{port}")
-    print(f"[TTS服务] 健康检查: http://localhost:{port}/health")
-    print("=" * 60)
+    logger.info(f"[TTS服务] 服务运行在 http://{args.host}:{port}")
+    logger.info(f"[TTS服务] 健康检查: http://localhost:{port}/health")
+    logger.info("=" * 60)
     
     # 运行服务（不使用 reloader，避免问题）
     app.run(debug=False, host=args.host, port=port, threaded=True, use_reloader=False)
