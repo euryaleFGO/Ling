@@ -66,10 +66,11 @@ def _ensure_mongodb_for_text_mode():
             result = subprocess.run(
                 ["tasklist", "/FI", "IMAGENAME eq mongod.exe"],
                 capture_output=True,
-                text=True,
-                timeout=5
+                timeout=5,
+                encoding="gbk",
+                errors="replace",
             )
-            return "mongod.exe" in result.stdout
+            return "mongod.exe" in (result.stdout or "")
         except (subprocess.SubprocessError, OSError):
             return False
 
@@ -123,6 +124,14 @@ def _ensure_mongodb_for_text_mode():
 
 
 def main():
+    # 修复 Windows GBK 控制台无法显示 UTF-8 字符的问题
+    if sys.platform == "win32":
+        try:
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
+
     # 解析参数
     debug_mode = "--debug" in sys.argv or "-d" in sys.argv
     no_voice = "--no-voice" in sys.argv

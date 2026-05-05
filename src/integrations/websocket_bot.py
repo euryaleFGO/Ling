@@ -17,24 +17,26 @@ from websockets.server import WebSocketServerProtocol
 
 from backend.llm.agent.agent import Agent
 from core.log import log
+from integrations.base_bot import BaseBot
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class WebSocketChatBot:
+class WebSocketChatBot(BaseBot):
     """WebSocket 聊天机器人"""
-    
+
     def __init__(self):
+        super().__init__(agent_id_prefix="ws_")
+
         # 连接管理
         self.connections: Dict[str, WebSocketServerProtocol] = {}
-        self.user_agents: Dict[str, Agent] = {}
-        
+
         # 统计信息
         self.total_connections = 0
         self.active_connections = 0
-        
+
         logger.info("WebSocket 聊天机器人初始化完成")
     
     async def register_connection(self, websocket: WebSocketServerProtocol, user_id: str):
@@ -42,16 +44,9 @@ class WebSocketChatBot:
         self.connections[user_id] = websocket
         self.total_connections += 1
         self.active_connections += 1
-        
-        # 创建用户的 Agent
-        if user_id not in self.user_agents:
-            agent = Agent(
-                user_id=f"ws_{user_id}",
-                enable_tools=True
-            )
-            agent.start_chat()
-            self.user_agents[user_id] = agent
-            logger.info(f"为用户 {user_id} 创建新的 Agent 会话")
+
+        # 创建用户的 Agent（复用基类方法）
+        self.get_or_create_agent(user_id)
         
         logger.info(f"用户 {user_id} 连接成功，当前活跃连接: {self.active_connections}")
         
@@ -68,9 +63,9 @@ class WebSocketChatBot:
             del self.connections[user_id]
             self.active_connections -= 1
             logger.info(f"用户 {user_id} 断开连接，当前活跃连接: {self.active_connections}")
-        
-        # 可选：保留 Agent 会话一段时间，以便重连时恢复上下文
-        # 这里暂时不删除，让会话保持活跃
+
+        # 保留 Agent 会话一段时间，以便重连时恢复上下文
+        # 清理由基类的后台线程根据 _max_idle_seconds 自动处理
     
     async def send_message(self, user_id: str, message: dict):
         """发送消息给指定用户"""
@@ -120,6 +115,9 @@ class WebSocketChatBot:
                     "timestamp": int(time.time())
                 })
                 return
+
+            # 更新活跃时间
+            self._last_active[user_id] = time.time()
             
             # 流式回复
             response_parts = []
@@ -228,6 +226,7 @@ class WebSocketChatBot:
     
     def run(self, host: str = "localhost", port: int = 8765):
         """启动 WebSocket 服务器"""
+        self.start_cleanup_thread()
         logger.info(f"启动 WebSocket 聊天机器人: ws://{host}:{port}")
         logger.info("等待客户端连接...")
         

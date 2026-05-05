@@ -23,6 +23,7 @@ from websockets.client import WebSocketClientProtocol
 
 from backend.llm.agent.agent import Agent
 from core.log import log
+from integrations.base_bot import BaseBot
 
 # 配置日志 - 设置为 INFO 级别以显示详细日志
 logging.basicConfig(
@@ -44,46 +45,45 @@ class WeWorkConfig:
     max_reconnect_attempts: int = 10  # 最大重连次数
 
 
-class WeWorkBotWebSocket:
+class WeWorkBotWebSocket(BaseBot):
     """企业微信机器人 WebSocket 长连接版本"""
-    
+
     def __init__(self, config: WeWorkConfig):
         """
         初始化企业微信机器人
-        
+
         Args:
             config: 机器人配置
         """
+        super().__init__(agent_id_prefix="wework_")
+
         logger.info("=" * 60)
         logger.info("🤖 初始化企业微信机器人...")
         logger.info(f"   Bot ID: {config.bot_id}")
         logger.info(f"   WebSocket URL: {config.ws_url}")
         logger.info("=" * 60)
-        
+
         self.config = config
-        
+
         # WebSocket 连接
         self.ws: Optional[WebSocketClientProtocol] = None
         self.connected = False
         self.subscribed = False
-        
-        # 用户会话管理（user_id -> Agent）
-        self.user_agents: Dict[str, Agent] = {}
-        
+
         # 流式消息管理（stream_id -> req_id）
         self.stream_sessions: Dict[str, str] = {}
-        
+
         # 事件循环
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.running = False
-        
+
         # 心跳任务
         self.heartbeat_task: Optional[asyncio.Task] = None
-        
+
         # 回调函数
         self.on_message_callback: Optional[Callable] = None
         self.on_event_callback: Optional[Callable] = None
-        
+
         logger.info("✅ 企业微信机器人初始化完成")
     
     async def connect(self):
@@ -563,25 +563,7 @@ class WeWorkBotWebSocket:
     
     def _get_user_agent(self, user_id: str) -> Agent:
         """获取或创建用户的 Agent 实例"""
-        if user_id not in self.user_agents:
-            logger.info("=" * 60)
-            logger.info(f"🆕 为用户 {user_id} 创建新的 Agent 会话...")
-            logger.info("   正在初始化 Agent（可能需要加载模型，请稍候）...")
-
-            # 为新用户创建 Agent
-            agent = Agent(
-                user_id=f"wework_{user_id}",
-                enable_tools=True
-            )
-
-            logger.info("   Agent 创建完成，正在启动会话...")
-            agent.start_chat()
-
-            self.user_agents[user_id] = agent
-            logger.info(f"✅ 用户 {user_id} 的 Agent 会话已就绪")
-            logger.info("=" * 60)
-        
-        return self.user_agents[user_id]
+        return self.get_or_create_agent(user_id)
     
     def _generate_req_id(self) -> str:
         """生成请求 ID"""
@@ -597,15 +579,18 @@ class WeWorkBotWebSocket:
             self.running = False
             self.connected = False
             self.subscribed = False
-            
+
             # 取消心跳任务
             if self.heartbeat_task:
                 self.heartbeat_task.cancel()
-            
+
             # 关闭 WebSocket
             if self.ws:
                 await self.ws.close()
-            
+
+            # 清理 Agent 池
+            self.shutdown()
+
             logger.info("🔌 WebSocket 连接已断开")
 
         except Exception as e:

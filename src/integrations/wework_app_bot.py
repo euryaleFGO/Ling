@@ -20,37 +20,36 @@ from datetime import datetime, timedelta
 
 from backend.llm.agent.agent import Agent
 from core.log import log
+from integrations.base_bot import BaseBot
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class WeWorkAppBot:
+class WeWorkAppBot(BaseBot):
     """企业微信应用机器人（SDK 长连接方式）"""
-    
+
     def __init__(self, bot_id: str, secret: str):
         """
         初始化企业微信应用机器人
-        
+
         Args:
             bot_id: 机器人 Bot ID
             secret: 机器人 Secret
         """
+        super().__init__(agent_id_prefix="wework_app_")
         self.bot_id = bot_id
         self.secret = secret
-        
+
         # API 基础配置
         self.api_base = "https://qyapi.weixin.qq.com/cgi-bin"
         self.access_token = None
         self.token_expires_at = None
-        
-        # 用户会话管理
-        self.user_agents: Dict[str, Agent] = {}
-        
+
         # 消息处理
         self.running = False
-        
+
         logger.info("企业微信应用机器人初始化完成")
     
     async def get_access_token(self) -> str:
@@ -137,16 +136,7 @@ class WeWorkAppBot:
     
     def _get_user_agent(self, user_id: str) -> Agent:
         """获取或创建用户的 Agent 实例"""
-        if user_id not in self.user_agents:
-            agent = Agent(
-                user_id=f"wework_app_{user_id}",
-                enable_tools=True
-            )
-            agent.start_chat()
-            self.user_agents[user_id] = agent
-            logger.info(f"为用户 {user_id} 创建新的 Agent 会话")
-        
-        return self.user_agents[user_id]
+        return self.get_or_create_agent(user_id)
     
     async def handle_message(self, message_data: Dict[str, Any]):
         """
@@ -214,20 +204,51 @@ class WeWorkAppBot:
     def stop(self):
         """停止机器人"""
         self.running = False
+        self.shutdown()
         logger.info("机器人已停止")
-    
+
     async def setup_webhook(self, callback_url: str, token: str, encoding_aes_key: str):
         """
         设置 Webhook 回调（推荐方式）
-        
+
+        通过企业微信 API 配置应用的消息接收 URL。
+
         Args:
-            callback_url: 回调 URL
-            token: 验证 token
-            encoding_aes_key: 消息加密密钥
+            callback_url: 回调 URL（如 https://example.com/webhook）
+            token: 验证 token（企业微信后台配置的 Token）
+            encoding_aes_key: 消息加密密钥（43 位字符）
         """
-        # 这里需要调用企业微信 API 设置回调 URL
-        # 具体实现需要参考企业微信文档
-        pass
+        access_token = await self.get_access_token()
+        if not access_token:
+            logger.error("无法获取 access_token，设置 Webhook 失败")
+            return False
+
+        url = f"{self.api_base}/callback/set"
+        params = {"access_token": access_token}
+        data = {
+            "url": callback_url,
+            "token": token,
+            "encoding_aes_key": encoding_aes_key,
+        }
+
+        try:
+            response = requests.post(
+                url,
+                params=params,
+                json=data,
+                headers={"Content-Type": "application/json"},
+                timeout=10,
+            )
+            result = response.json()
+            if result.get("errcode") == 0:
+                logger.info("Webhook 回调设置成功: %s", callback_url)
+                return True
+            else:
+                logger.error("设置 Webhook 失败: %s", result)
+                return False
+        except Exception as e:
+            logger.error("设置 Webhook 异常: %s", e)
+            return False
 
 
 class WeWorkWebhookHandler:

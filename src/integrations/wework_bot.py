@@ -20,31 +20,30 @@ import logging
 
 from backend.llm.agent.agent import Agent
 from core.log import log
+from integrations.base_bot import BaseBot
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class WeWorkBot:
+class WeWorkBot(BaseBot):
     """企业微信机器人"""
-    
+
     def __init__(self, webhook_key: str = None):
         """
         初始化企业微信机器人
-        
+
         Args:
             webhook_key: 企业微信机器人的 webhook key（用于验证签名）
         """
+        super().__init__(agent_id_prefix="wework_")
         self.webhook_key = webhook_key or os.getenv("WEWORK_WEBHOOK_KEY", "")
-        
-        # 用户会话管理（user_id -> Agent）
-        self.user_agents: Dict[str, Agent] = {}
-        
+
         # Flask 应用
         self.app = Flask(__name__)
         self._setup_routes()
-        
+
         logger.info("企业微信机器人初始化完成")
     
     def _setup_routes(self):
@@ -200,26 +199,16 @@ class WeWorkBot:
     
     def _get_user_agent(self, user_id: str) -> Agent:
         """获取或创建用户的 Agent 实例"""
-        if user_id not in self.user_agents:
-            # 为新用户创建 Agent
-            agent = Agent(
-                user_id=f"wework_{user_id}",  # 添加前缀区分企业微信用户
-                enable_tools=True  # 启用工具功能
-            )
-            agent.start_chat()
-            self.user_agents[user_id] = agent
-            logger.info(f"为用户 {user_id} 创建新的 Agent 会话")
-        
-        return self.user_agents[user_id]
-    
+        return self.get_or_create_agent(user_id)
+
     def cleanup_inactive_users(self, max_idle_hours: int = 24):
         """清理长时间不活跃的用户会话"""
-        # 这里可以添加基于时间的会话清理逻辑
-        # 暂时简单实现
-        pass
+        self._max_idle_seconds = max_idle_hours * 3600
+        self.cleanup_inactive_agents()
     
     def run(self, host: str = "127.0.0.1", port: int = 8080, debug: bool = False):
         """启动 Flask 服务器"""
+        self.start_cleanup_thread()
         logger.info(f"启动企业微信机器人服务器: http://{host}:{port}")
         logger.info("Webhook 地址: http://{host}:{port}/webhook")
 

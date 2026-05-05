@@ -474,24 +474,38 @@ class SpeakerManager:
     
     def _update_user_profile(self, speaker_id: str, speaker_name: str, metadata: Dict):
         """
-        更新用户档案数据库（占位符实现）
-        
+        更新用户档案数据库
+
         Args:
             speaker_id: 说话人 ID
             speaker_name: 说话人名称
             metadata: 元数据
         """
-        # TODO: 实现用户档案数据库更新
-        # 当 UserProfileDatabase 可用时实现
-        pass
-    
+        if self.user_profile_db is None:
+            log.debug("UserProfileDatabase 未配置，跳过档案更新: %s", speaker_id)
+            return
+
+        try:
+            self.user_profile_db.update_profile(
+                speaker_id=speaker_id,
+                name=speaker_name,
+                metadata=metadata,
+            )
+        except Exception as e:
+            log.warn("更新用户档案失败 [%s]: %s", speaker_id, e)
+
     def _delete_user_profile(self, speaker_id: str):
         """
-        删除用户档案（占位符实现）
-        
+        删除用户档案
+
         Args:
             speaker_id: 说话人 ID
         """
-        # TODO: 实现用户档案删除
-        # 当 UserProfileDatabase 可用时实现
-        pass
+        if self.user_profile_db is None:
+            log.debug("UserProfileDatabase 未配置，跳过档案删除: %s", speaker_id)
+            return
+
+        try:
+            self.user_profile_db.delete_profile(speaker_id)
+        except Exception as e:
+            log.warn("删除用户档案失败 [%s]: %s", speaker_id, e)

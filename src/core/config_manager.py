@@ -279,11 +279,11 @@ class ConfigManager:
 
         # LLM
         if not c.llm.api_key:
-            c.llm.api_key = os.environ.get("LIYING_LLM_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or ""
+            c.llm.api_key = os.environ.get("LIYING_LLM_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
         if not c.llm.base_url:
-            c.llm.base_url = os.environ.get("LIYING_LLM_BASE_URL") or os.environ.get("BASE_URL") or ""
+            c.llm.base_url = os.environ.get("LIYING_LLM_BASE_URL") or os.environ.get("BASE_URL") or os.environ.get("OPENAI_API_BASE") or ""
         if not c.llm.model:
-            c.llm.model = os.environ.get("LIYING_LLM_MODEL") or os.environ.get("MODEL") or ""
+            c.llm.model = os.environ.get("LIYING_LLM_MODEL") or os.environ.get("MODEL") or os.environ.get("OPENAI_MODEL") or ""
 
         # TTS
         if not c.tts.remote_url:

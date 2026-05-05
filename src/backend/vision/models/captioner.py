@@ -80,17 +80,19 @@ class ImageCaptioner:
         print(f"[Vision] 加载图像描述模型: {self.model_name}")
         print(f"[Vision] 使用设备: {self._device}")
         
-        self._processor = BlipProcessor.from_pretrained(self.model_name)
-        
+        self._processor = BlipProcessor.from_pretrained(self.model_name, local_files_only=True)
+
         # 根据设备和配置加载模型
         if self._device == "cuda" and self.use_fp16:
             self._model = BlipForConditionalGeneration.from_pretrained(
                 self.model_name,
-                torch_dtype=torch.float16
+                torch_dtype=torch.float16,
+                local_files_only=True,
             ).to(self._device)
         else:
             self._model = BlipForConditionalGeneration.from_pretrained(
-                self.model_name
+                self.model_name,
+                local_files_only=True,
             ).to(self._device)
         
         self._model.eval()

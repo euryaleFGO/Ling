@@ -17,36 +17,35 @@ from datetime import datetime, timedelta
 
 from backend.llm.agent.agent import Agent
 from core.log import log
+from integrations.base_bot import BaseBot
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class WeWorkSimpleBot:
+class WeWorkSimpleBot(BaseBot):
     """企业微信机器人 - 简化版"""
-    
+
     def __init__(self, corp_id: str, corp_secret: str, agent_id: str = "1000002"):
         """
         初始化企业微信机器人
-        
+
         Args:
             corp_id: 企业 ID (Bot ID)
             corp_secret: 应用密钥 (Secret)
             agent_id: 应用 ID
         """
+        super().__init__(agent_id_prefix="wework_")
         self.corp_id = corp_id
         self.corp_secret = corp_secret
         self.agent_id = agent_id
-        
+
         # API 配置
         self.api_base = "https://qyapi.weixin.qq.com/cgi-bin"
         self.access_token = None
         self.token_expires_at = None
-        
-        # 用户会话管理
-        self.user_agents: Dict[str, Agent] = {}
-        
+
         logger.info("企业微信机器人初始化完成")
     
     def get_access_token(self) -> Optional[str]:
@@ -126,16 +125,7 @@ class WeWorkSimpleBot:
     
     def _get_user_agent(self, user_id: str) -> Agent:
         """获取或创建用户的 Agent 实例"""
-        if user_id not in self.user_agents:
-            agent = Agent(
-                user_id=f"wework_{user_id}",
-                enable_tools=True
-            )
-            agent.start_chat()
-            self.user_agents[user_id] = agent
-            logger.info(f"为用户 {user_id} 创建新的 Agent 会话")
-        
-        return self.user_agents[user_id]
+        return self.get_or_create_agent(user_id)
     
     def handle_message(self, message_data: Dict[str, Any]) -> Dict[str, Any]:
         """处理接收到的消息"""

@@ -47,6 +47,13 @@ TTS_ROOT = os.path.dirname(BASE_DIR)
 # Matcha-TTS 路径（cosyvoice 需要它）
 MATCHA_TTS_PATH = os.path.join(TTS_ROOT, "third_party", "Matcha-TTS")
 
+# 将 tts 根目录加入 sys.path，使 cosyvoice 模块可被 import
+if TTS_ROOT not in sys.path:
+    sys.path.insert(0, TTS_ROOT)
+# Matcha-TTS 也需要在路径中（cosyvoice 依赖它）
+if MATCHA_TTS_PATH not in sys.path:
+    sys.path.insert(0, MATCHA_TTS_PATH)
+
 # 延迟导入 CosyVoice2，避免模块加载时出错
 # from cosyvoice.cli.cosyvoice import CosyVoice2
 # from cosyvoice.utils.file_utils import load_wav

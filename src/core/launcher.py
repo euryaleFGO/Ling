@@ -144,7 +144,7 @@ class Launcher:
                 status = subprocess.run([
                     "powershell", "-NoProfile", "-Command",
                     f"(Get-Service -Name '{name}' -ErrorAction SilentlyContinue).Status"
-                ], capture_output=True, text=True, timeout=5)
+                ], capture_output=True, text=True, encoding='utf-8', errors='ignore', timeout=5)
                 
                 out = (status.stdout or "").strip()
                 if out and out.lower() == "running":
@@ -157,7 +157,7 @@ class Launcher:
                         subprocess.run([
                             "powershell", "-NoProfile", "-Command",
                             f"Start-Service -Name '{name}'"
-                        ], capture_output=True, text=True, timeout=15, check=True)
+                        ], capture_output=True, text=True, encoding='utf-8', errors='ignore', timeout=15, check=True)
                         time.sleep(2)
                         if self._is_mongodb_running():
                             log.debug(f"MongoDB 服务 '{name}' 启动成功")
@@ -196,6 +196,8 @@ class Launcher:
                 ["tasklist", "/FI", "IMAGENAME eq mongod.exe"],
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='ignore',
                 timeout=5
             )
             if "mongod.exe" in result.stdout:
@@ -204,6 +206,8 @@ class Launcher:
                     ["netstat", "-an"],
                     capture_output=True,
                     text=True,
+                    encoding='utf-8',
+                    errors='ignore',
                     timeout=5
                 )
                 if f":{expected_port}" in port_check.stdout and "LISTENING" in port_check.stdout:
@@ -235,7 +239,7 @@ class Launcher:
                 arg = f"Start-Process -FilePath '{mongod_exe}' -ArgumentList '--config', '{config_file}' -WindowStyle Hidden"
             else:
                 arg = f"Start-Process -FilePath '{mongod_exe}' -WindowStyle Hidden"
-            subprocess.run(["powershell", "-NoProfile", "-Command", arg], timeout=10)
+            subprocess.run(["powershell", "-NoProfile", "-Command", arg], timeout=10, capture_output=True, text=True, encoding='utf-8', errors='ignore')
             
             # 等待几秒让 MongoDB 启动
             log.debug("等待 MongoDB 启动...")
@@ -836,6 +840,8 @@ class Launcher:
                 ["tasklist", "/FI", "IMAGENAME eq mongod.exe", "/FO", "CSV"],
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='ignore',
                 timeout=5
             )
             
