@@ -15,7 +15,7 @@ from PyQt6.QtCore import Qt
 
 from core.log import log, set_debug
 from gui.main_window import MainWindow
-from core.settings import AppSettings
+from core.config_manager import get_config_manager
 
 class Launcher:
     def __init__(self, debug_mode=False, enable_conversation=True, text_only=False, asr_device="auto"):
@@ -31,13 +31,12 @@ class Launcher:
         # 从配置文件读取文字输入模式（CLI 参数优先）
         if not text_only:
             try:
-                from core.config_manager import get_config_manager
                 cfg = get_config_manager().config
                 if cfg.general.use_text_input:
                     self.text_only = True
                     log.info("[配置] 从配置文件启用文字输入模式")
             except Exception:
-                logger.debug("Failed to read text_input config from AppSettings")
+                logger.debug("Failed to read text_input config from ConfigManager")
                 pass
         self.asr_device = asr_device
         
@@ -177,14 +176,14 @@ class Launcher:
     def _is_mongodb_running(self):
         """检查 MongoDB 是否在运行（通过进程和端口）"""
         try:
-            s = AppSettings.load()
+            s = get_config_manager().config
             # 仅当使用本地默认端口时才做端口监听判断（避免误判远程/自定义端口）
             expected_port = 27017
             try:
-                if s.mongodb_uri:
+                if s.mongodb.uri:
                     # 简单解析 mongodb://host:port
-                    if "://" in s.mongodb_uri:
-                        tail = s.mongodb_uri.split("://", 1)[1]
+                    if "://" in s.mongodb.uri:
+                        tail = s.mongodb.uri.split("://", 1)[1]
                         host_port = tail.split("/", 1)[0]
                         if ":" in host_port:
                             expected_port = int(host_port.rsplit(":", 1)[1])
@@ -631,8 +630,8 @@ class Launcher:
         """后台启动 WebSocket 消息服务（端口 8765），供 Live2D 前端实时接收 AI 回复"""
         try:
             from core.message_server import create_server
-            s = AppSettings.load()
-            self._message_server = create_server(s.ws_port, host=s.ws_host)
+            cfg = get_config_manager().config
+            self._message_server = create_server(cfg.websocket.port, host=cfg.websocket.host)
             self._message_server_thread = threading.Thread(
                 target=self._message_server.serve_forever,
                 daemon=True,
