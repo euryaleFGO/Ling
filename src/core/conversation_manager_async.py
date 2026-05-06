@@ -25,8 +25,9 @@ from core.config_manager import SystemConfig, get_config_manager
 from core.emotion_classifier import EmotionClassifier
 from core.sv_engine import SVEngine
 from core.performance_metrics import PerformanceMonitor, InterruptMetrics
-from core.conversation import ConversationState, ConversationConfig, TurnMetrics
+from core.conversation import ConversationState, TurnMetrics
 from core.conversation.sentence_splitter import pop_sentence as _pop_sentence
+from core import exit_signal
 
 # Mixins (imported for composition; also available for direct use)
 from core.conversation_component_init import ComponentInitMixin
@@ -98,6 +99,8 @@ class AsyncConversationManager(
         self._diarization = None
         self._current_user_id: str = self.config.general.user_id
         self._on_speaker_change_callback: Optional[Callable] = None
+        self._speaker_manager = None
+        self._voiceprint_db = None
 
         # Turn management (Yione)
         self._current_turn: asyncio.Task | None = None
@@ -136,6 +139,7 @@ class AsyncConversationManager(
         on_audio_rms: Callable[[float], None] = None,
         on_viseme: Callable[[float, float], None] = None,
         on_exit_requested: Callable[[str], None] = None,
+        on_speaker_change: Callable[[str, float], None] = None,
     ):
         """Register UI / external callbacks."""
         self._on_state_change = on_state_change
@@ -145,6 +149,7 @@ class AsyncConversationManager(
         self._on_audio_rms = on_audio_rms
         self._on_viseme = on_viseme
         self._on_exit_requested = on_exit_requested
+        self._on_speaker_change_callback = on_speaker_change
 
     # ============================================================
     #  State management
@@ -172,6 +177,11 @@ class AsyncConversationManager(
         self._current_turn_id = f"turn_{int(t0 * 1000)}"
 
         log.info(f"[0.00s] User message: {user_text[:40]}...")
+
+        # 设置说话人上下文到 Agent
+        if self._agent and hasattr(self._agent, 'set_speaker_context'):
+            is_unknown = self._current_user_id.startswith("unknown_")
+            self._agent.set_speaker_context(self._current_user_id, is_unknown)
 
         self._set_state(ConversationState.PROCESSING)
 
@@ -250,6 +260,15 @@ class AsyncConversationManager(
             log.info(f"[{time.monotonic() - t0:.2f}s] All segments played")
             self._set_state(ConversationState.IDLE)
 
+            # TTS 播完后，检查是否有待处理的退出请求（exit_app 工具暂存的）
+            pending_reason = exit_signal.consume_pending_exit()
+            if pending_reason is not None:
+                log.info(f"[conversation] pending exit promoted after TTS: {pending_reason}")
+                exit_signal.request_exit(pending_reason)
+
+            # 短暂等待（麦克风已在 TTS worker 中恢复）
+            await asyncio.sleep(0.1)
+
             t_end = time.monotonic()
             turn_metrics = TurnMetrics(
                 turn_id=self._current_turn_id,
@@ -265,6 +284,12 @@ class AsyncConversationManager(
 
         except asyncio.CancelledError:
             interrupted = True
+            # 用户打断 -> 丢弃暂存的退出请求，对话继续
+            exit_signal.consume_pending_exit()
+            # 确保麦克风不会停留在暂停状态
+            if self._audio_input:
+                await asyncio.to_thread(self._audio_input.resume_after_tts)
+
             t_end = time.monotonic()
             log.info(f"[{t_end - t0:.2f}s] Turn interrupted")
 
@@ -289,6 +314,10 @@ class AsyncConversationManager(
             raise
         except Exception:
             logger.exception("Turn failed")
+            # 异常时也丢弃暂存退出，确保麦克风恢复
+            exit_signal.consume_pending_exit()
+            if self._audio_input:
+                await asyncio.to_thread(self._audio_input.resume_after_tts)
             self._drain_queue(pending)
             worker.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -383,42 +412,56 @@ class AsyncConversationManager(
             self._user_text_queue = asyncio.Queue()
             log.info("[text-input] Queue created, waiting for submissions ...")
 
-        while self._running.is_set():
-            try:
-                self._set_state(ConversationState.LISTENING)
-                user_text = await self._listen_and_recognize_async()
-
-                if not user_text:
-                    continue
-
-                if user_text.lower() in ['quit', 'exit', '退出', '结束']:
-                    log.debug("Exit command received")
+        try:
+            while self._running.is_set():
+                # 检查 exit_app 工具是否请求了退出
+                if exit_signal.is_exit_requested():
+                    reason = exit_signal.consume_exit_request()
+                    log.info(f"[conversation] exit_app requested: {reason}")
                     break
 
-                if not self._should_submit(user_text):
-                    continue
+                try:
+                    self._set_state(ConversationState.LISTENING)
+                    user_text = await self._listen_and_recognize_async()
 
-                logger.info(f"\nUser: {user_text}")
-                if self._on_user_text:
-                    self._on_user_text(user_text)
+                    if not user_text:
+                        continue
 
-                await self.cancel_current_turn()
-                self.run_turn(user_text)
+                    if user_text.lower() in ['quit', 'exit', '退出', '结束']:
+                        log.debug("Exit command received")
+                        break
 
-                if self._current_turn:
-                    try:
-                        await self._current_turn
-                    except asyncio.CancelledError:
-                        pass
+                    if not self._should_submit(user_text):
+                        continue
 
-            except KeyboardInterrupt:
-                logger.info("\nUser interrupted")
-                break
-            except Exception as e:
-                log.error(f"Conversation error: {e}")
-                import traceback
-                traceback.print_exc()
-                await asyncio.sleep(1)
+                    logger.info(f"\nUser: {user_text}")
+                    if self._on_user_text:
+                        self._on_user_text(user_text)
+
+                    await self.cancel_current_turn()
+                    self.run_turn(user_text)
+
+                    if self._current_turn:
+                        try:
+                            await self._current_turn
+                        except asyncio.CancelledError:
+                            pass
+
+                except KeyboardInterrupt:
+                    logger.info("\nUser interrupted")
+                    break
+                except Exception as e:
+                    log.error(f"Conversation error: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    await asyncio.sleep(1)
+        finally:
+            # 退出时关闭会话，生成摘要
+            if self._agent:
+                try:
+                    self._agent.end_chat(auto_summarize=True)
+                except Exception as e:
+                    log.error(f"[conversation] 退出时关闭会话失败: {e}")
 
         log.info("Async conversation loop exited")
 
@@ -443,6 +486,12 @@ class AsyncConversationManager(
         """Start the conversation loop."""
         self.initialize()
 
+        # 启动会话轮转调度器（每天凌晨 4 点新开会话）
+        self._start_session_scheduler()
+
+        # 启动梦境整合调度器（每天凌晨 4:30 执行记忆整合）
+        self._start_dream_scheduler()
+
         if blocking:
             asyncio.run(self.run_async())
         else:
@@ -451,6 +500,34 @@ class AsyncConversationManager(
                 asyncio.run(self.run_async())
             thread = _threading.Thread(target=run_in_thread, daemon=True)
             thread.start()
+
+    def _start_session_scheduler(self):
+        """启动会话轮转调度器"""
+        try:
+            from backend.llm.memory.session_scheduler import start_session_scheduler
+            schedule_time = getattr(self.config.general, 'session_rotate_time', '04:00')
+            self._session_scheduler = start_session_scheduler(
+                agent=self._agent,
+                context_manager=self._agent._context_manager if self._agent else None,
+                schedule_time=schedule_time,
+                enabled=True
+            )
+        except Exception as e:
+            log.error(f"[conversation] 启动会话调度器失败: {e}")
+
+    def _start_dream_scheduler(self):
+        """启动梦境整合调度器"""
+        try:
+            from backend.llm.memory.dream_scheduler import start_dream_scheduler
+            user_id = self.config.general.user_id
+            self._dream_scheduler = start_dream_scheduler(
+                user_id=user_id,
+                schedule_time="04:30",
+                days_back=7,
+                enabled=True
+            )
+        except Exception as e:
+            log.error(f"[conversation] 启动梦境调度器失败: {e}")
 
     async def stop(self):
         """Stop the conversation (async)."""
@@ -468,6 +545,13 @@ class AsyncConversationManager(
         """Stop the conversation (sync, safe from non-async contexts)."""
         self._running.clear()
         self._user_text_queue = None
+
+        # 停止调度器
+        if hasattr(self, '_session_scheduler') and self._session_scheduler:
+            self._session_scheduler.stop()
+        if hasattr(self, '_dream_scheduler') and self._dream_scheduler:
+            self._dream_scheduler.stop()
+
         if self._audio_output:
             self._audio_output.stop()
         if self._audio_input:

@@ -13,7 +13,7 @@ from pathlib import Path
 _project_root = str(Path(__file__).resolve().parent.parent.parent.parent)
 
 from ..api_infer.openai_infer import APIInfer
-from ..api_infer.config import DEEPSEEK_API_KEY, BASE_URL, MODEL
+from ..api_infer.config import LLM_API_KEY, BASE_URL, MODEL
 from ..memory.context_manager import ContextManager
 from ..memory.long_term_memory import LongTermMemoryManager
 from ..memory.knowledge_graph import get_knowledge_graph
@@ -21,7 +21,7 @@ from ..memory.entity_extractor import get_entity_extractor
 from ..rag import get_rag_pipeline, RAGConfig
 from ..database.knowledge_dao import get_knowledge_dao
 from .tool_manager import ToolManager
-from ..tools import DateTimeTool, MemoryTool, SummaryTool, BrowserSearchTool, VisionTool, ScreenshotAnalyzeTool, ReminderTool, Live2DMotionTool, ExitAppTool, CameraCaptureTool, TerminalExecuteTool, SkillGeneratorTool, DiagnoseTool, AutoFixTool, CodeModifyTool
+from ..tools import DateTimeTool, MemoryTool, SummaryTool, BrowserSearchTool, VisionTool, ScreenshotAnalyzeTool, ReminderTool, Live2DMotionTool, ExitAppTool, CameraCaptureTool, TerminalExecuteTool, SkillGeneratorTool, DiagnoseTool, AutoFixTool, CodeModifyTool, SpeakerManageTool
 from ..utils.logging_config import setup_logging, get_logger, log_llm_request, log_llm_response, log_error
 
 try:
@@ -68,12 +68,13 @@ class Agent:
         # LLM 客户端
         self._llm = APIInfer(
             url=base_url or BASE_URL,
-            api_key=api_key or DEEPSEEK_API_KEY,
+            api_key=api_key or LLM_API_KEY,
             model_name=model or MODEL
         )
 
         # 记忆管理
         self._context_manager = ContextManager(user_id=user_id)
+        self._context_manager.set_llm_client(self._llm)
         self._memory_manager = LongTermMemoryManager(user_id=user_id)
         self._knowledge_dao = get_knowledge_dao()
 
@@ -101,6 +102,11 @@ class Agent:
 
         # 打断标志（使用 threading.Event 保证线程安全）
         self._interrupted = threading.Event()
+
+        # 说话人管理
+        self._speaker_manage_tool: Optional[SpeakerManageTool] = None
+        self._current_speaker_id: str = ""
+        self._is_unknown_speaker: bool = False
     
     def _setup_tools(self):
         """初始化工具"""
@@ -145,6 +151,16 @@ class Agent:
         # 注册提醒/行程管理工具
         self._tool_manager.register(ReminderTool())
 
+        # 初始化 ReminderManager（连接 MongoDB）
+        try:
+            from ..tools.reminder_tool import ReminderManager
+            from ..database.mongo_client import get_db
+            manager = ReminderManager.get_instance()
+            manager.initialize(get_db())
+            manager.start()
+        except Exception as e:
+            logger.warning(f"ReminderManager MongoDB 初始化失败，使用内存模式: {e}")
+
         # 注册 Live2D 动作工具（用户说「做个挥手」等时由 Agent 控制角色做动作）
         self._tool_manager.register(Live2DMotionTool())
 
@@ -169,6 +185,23 @@ class Agent:
         self._tool_manager.register(AutoFixTool())
         # 代码修改工具（安全的文件读写、修改、回滚）
         self._tool_manager.register(CodeModifyTool(project_root=_project_root))
+
+        # 注册说话人管理工具（改名、列出说话人）
+        self._speaker_manage_tool = SpeakerManageTool()
+        self._tool_manager.register(self._speaker_manage_tool)
+
+    def set_speaker_manager(self, speaker_manager):
+        """注入 SpeakerManager 引用到说话人管理工具"""
+        if self._speaker_manage_tool:
+            self._speaker_manage_tool.set_speaker_manager(speaker_manager)
+
+    def set_speaker_context(self, speaker_id: str, is_unknown: bool = False):
+        """设置当前说话人上下文（由 AsyncConversationManager 调用）"""
+        self._current_speaker_id = speaker_id
+        self._is_unknown_speaker = is_unknown
+        # 同步更新到 tool
+        if self._speaker_manage_tool:
+            self._speaker_manage_tool._current_speaker_id = speaker_id
 
     def set_tool_status_callback(self, callback: Callable[[str, str, str], None]):
         """设置工具状态回调（用于通知用户工具执行状态）
@@ -419,7 +452,14 @@ class Agent:
         if kg_context:
             parts.append(f"\n{kg_context}")
         
-        # 6. 工具使用说明（如果启用）
+        # 6. 当前说话人信息
+        if self._current_speaker_id:
+            if self._is_unknown_speaker:
+                parts.append(f"\n当前说话人是未注册用户 {self._current_speaker_id}。如果用户在对话中说出了自己的名字，请使用 manage_speaker 工具将其注册为真实名字。不要主动反复询问用户的名字，只在用户自然提到时处理。")
+            else:
+                parts.append(f"\n当前说话人: {self._current_speaker_id}")
+
+        # 7. 工具使用说明（如果启用）
         if self.enable_tools and self._tool_manager.list_tools():
             parts.append(f"""
 工具使用说明：
@@ -429,6 +469,7 @@ class Agent:
 当需要分析屏幕截图时，使用截图分析工具(screenshot_analyze)来识别文字和界面元素。
 当用户明确表达结束会话/告别离开（如”你退下吧””你能自己关机吗””再见””拜拜””byebye””明天见””晚安””早点睡觉”）时，先调用 exit_app 工具，再给出简短告别语。
 当用户要求添加新功能、创建自动化工具、扩展技能时，使用 skill_generator 工具生成新工具。
+当用户说出自己的名字时（如"我叫xxx"、"我是xxx"），使用 manage_speaker 工具将当前说话人注册为该名字。
 不要滥用工具，简单的闲聊不需要工具。""")
 
         # 7. TTS 友好输出（回复会用于语音合成，避免 Markdown/颜文字）
@@ -609,12 +650,17 @@ class Agent:
             self._context_manager.add_assistant_message(final_response)
     
     def _build_messages(self, user_input: str) -> List[Dict]:
-        """构建发送给 LLM 的消息"""
-        messages = []
-        
-        # System prompt
+        """构建发送给 LLM 的消息（支持滚动摘要）"""
+        # 通过 ContextManager 构建消息（含滚动摘要支持）
+        messages = self._context_manager.build_messages_with_summary(
+            user_input=user_input,
+            include_history=True
+        )
+
+        # 用 Agent 自定义系统提示词替换 ContextManager 的默认系统提示词
+        # （Agent 版本包含工具说明、知识图谱、说话人信息、TTS 格式等）
         system_content = self._build_system_prompt()
-        
+
         # RAG 检索上下文
         try:
             rag_response = self._rag_pipeline.retrieve_context(user_input)
@@ -625,22 +671,11 @@ class Agent:
                            f"耗时={rag_response.total_time_ms:.1f}ms")
         except Exception as e:
             logger.warning(f"RAG 检索失败: {e}")
-        
-        messages.append({
-            "role": "system",
-            "content": system_content
-        })
-        
-        # 对话历史
-        history = self._context_manager.get_history()
-        messages.extend(history)
-        
-        # 当前用户输入
-        messages.append({
-            "role": "user",
-            "content": user_input
-        })
-        
+
+        # 替换第一条 system 消息
+        if messages and messages[0]["role"] == "system":
+            messages[0]["content"] = system_content
+
         return messages
     
     def chat_sync(self, message: str) -> str:

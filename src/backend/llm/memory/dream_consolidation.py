@@ -273,13 +273,17 @@ class DreamConsolidation:
     
     def _get_recent_sessions(self, days_back: int) -> List[Dict]:
         """获取最近的会话"""
-        # 简化实现：获取用户的最近 N 个会话
-        # 实际应该按日期过滤
         cutoff_date = datetime.utcnow() - timedelta(days=days_back)
-        
-        # 这里需要 conversation_dao 支持按日期查询
-        # 暂时返回空列表，实际使用时需要实现
-        return []
+
+        sessions = self.conversation_dao.get_sessions_by_date_range(
+            user_id=self.user_id,
+            start_date=cutoff_date,
+            status="closed",
+            limit=50
+        )
+
+        logger.info(f"[梦境-Light] 查询到 {len(sessions)} 个近 {days_back} 天的已关闭会话")
+        return sessions
     
     def _extract_memory_candidates(
         self,

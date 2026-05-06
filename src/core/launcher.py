@@ -373,17 +373,11 @@ class Launcher:
                         logger.debug("Failed to send conversation state to Live2D via WebSocket")
                         pass
 
-                def on_exit_requested(reason: str):
-                    """对话请求退出应用（在当前播报结束后触发）"""
-                    log.info(f"收到对话退出请求: {reason}")
-                    self.quit_app()
-                
                 self._conversation_manager.set_callbacks(
                     on_subtitle=on_subtitle,
                     on_audio_rms=on_audio_rms,
                     on_viseme=on_viseme,
                     on_state_change=on_state_change,
-                    on_exit_requested=on_exit_requested,
                 )
                 
                 # 初始化对话管理器
@@ -396,6 +390,7 @@ class Launcher:
                     loop.run_until_complete(self._conversation_manager.run_async())
                 finally:
                     loop.close()
+                    log.debug("对话事件循环已关闭")
                 
             except Exception as e:
                 log.error(f"对话系统启动失败: {e}")
@@ -410,7 +405,23 @@ class Launcher:
         )
         self._conversation_thread.start()
         log.debug("对话系统已在后台启动")
+
+        # 主线程轮询 exit_signal，确保从后台线程触发的退出能正确关闭 Qt
+        from PyQt6.QtCore import QTimer
+        from core import exit_signal
+        self._exit_poll_timer = QTimer()
+        self._exit_poll_timer.timeout.connect(self._check_exit_signal)
+        self._exit_poll_timer.start(500)
     
+    def _check_exit_signal(self):
+        """QTimer 回调（主线程）：检测 exit_app 请求并退出应用"""
+        from core import exit_signal
+        if exit_signal.is_exit_requested():
+            reason = exit_signal.consume_exit_request()
+            log.info(f"exit_app 触发退出: {reason}")
+            self._exit_poll_timer.stop()
+            self.quit_app()
+
     def toggle_conversation(self):
         """暂停/恢复对话"""
         if self._conversation_manager:

@@ -47,8 +47,11 @@ public class SpeechBubble {
     private String fullPendingText = "";   // 完整待显示文本
     private static final int CHARS_PER_FRAME = 3;  // 每帧显示字符数
 
-    private static final long MESSAGE_TIMEOUT_MS = 10000; // 10秒
+    private static final long MESSAGE_TIMEOUT_MS = 10000; // 10秒（idle 后开始计时）
     private static final float FADE_SPEED = 0.05f;
+
+    // 字幕消失时机：等音频播完（idle）后再开始倒计时
+    private long idleSinceTime = 0;  // 进入 idle 的时间戳
 
     // 新闻播报底条样式
     private static final int SUBTITLE_BOTTOM_MARGIN = 20;  // 距底部边距
@@ -476,8 +479,8 @@ public class SpeechBubble {
             updateTextTexture(visibleText);
         }
 
-        // 10秒无新消息后淡出
-        if (lastMessageTime > 0 && now - lastMessageTime > MESSAGE_TIMEOUT_MS && alpha > 0.0f) {
+        // idle 后 10 秒淡出（音频播放期间字幕保持显示）
+        if (idleSinceTime > 0 && now - idleSinceTime > MESSAGE_TIMEOUT_MS && alpha > 0.0f) {
             alpha = Math.max(0.0f, alpha - FADE_SPEED);
             if (alpha <= 0.0f) {
                 synchronized (messageText) {
@@ -677,7 +680,13 @@ public class SpeechBubble {
                 }
                 case "state" -> {
                     if (json.has("state")) {
-                        conversationState.set(json.get("state").getAsString());
+                        String newState = json.get("state").getAsString();
+                        conversationState.set(newState);
+                        if ("idle".equals(newState)) {
+                            idleSinceTime = System.currentTimeMillis();
+                        } else {
+                            idleSinceTime = 0;  // 非 idle 时重置，字幕保持显示
+                        }
                     }
                 }
                 case "clear" -> clearMessage();
@@ -724,6 +733,7 @@ public class SpeechBubble {
             totalCharCount = 0;
             alpha = 0.0f;
             lastMessageTime = 0;
+            idleSinceTime = 0;
         }
     }
 

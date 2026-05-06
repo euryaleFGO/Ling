@@ -25,9 +25,9 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from src.core.log import log
-from src.core.sv_engine import SVEngine
-from src.core.voiceprint_database import VoiceprintDatabase
+from core.log import log
+from core.sv_engine import SVEngine
+from core.voiceprint_database import VoiceprintDatabase
 
 
 @dataclass
@@ -198,7 +198,156 @@ class SpeakerManager:
                 message=f"注册失败: {str(e)}",
                 quality_score=0.0
             )
-    
+
+    def register_unknown(
+        self,
+        audio: np.ndarray,
+        sample_rate: int = 16000,
+    ) -> RegisterResult:
+        """
+        自动注册未知说话人（unknown_XX）
+
+        跳过最低质量检查，只要能提取声纹就行。
+
+        Args:
+            audio: 音频样本
+            sample_rate: 采样率
+
+        Returns:
+            RegisterResult: 包含 speaker_id (unknown_XX), success, message
+        """
+        try:
+            # 1. 获取下一个 unknown ID
+            speaker_id = self.voiceprint_db.get_next_unknown_id()
+
+            # 2. 提取声纹特征
+            embedding = self.sv_engine.embed(audio, sample_rate=sample_rate)
+
+            # 3. 简单质量检查（仅检查向量是否有效，不检查最低质量）
+            quality_score = self._evaluate_voiceprint_quality(embedding, audio, sample_rate)
+            norm = float(np.linalg.norm(embedding))
+            if norm < 0.01:
+                return RegisterResult(
+                    speaker_id="",
+                    success=False,
+                    message="声纹提取失败（向量无效）",
+                    quality_score=0.0
+                )
+
+            # 4. 准备元数据
+            duration_sec = len(audio) / sample_rate
+            now = datetime.now()
+            full_metadata = {
+                "speaker_id": speaker_id,
+                "speaker_name": speaker_id,
+                "user_id": speaker_id,
+                "registered_at": now.isoformat(),
+                "last_active_at": now.isoformat(),
+                "audio_duration_sec": duration_sec,
+                "embedding_dim": len(embedding),
+                "model_id": getattr(self.sv_engine, 'model_id', 'unknown'),
+                "quality_score": quality_score,
+                "sample_count": 1,
+                "is_unknown": True,
+            }
+
+            # 5. 保存声纹到数据库
+            success = self.voiceprint_db.save_voiceprint(
+                speaker_id=speaker_id,
+                embedding=embedding,
+                metadata=full_metadata
+            )
+
+            if not success:
+                return RegisterResult(
+                    speaker_id="",
+                    success=False,
+                    message="保存声纹到数据库失败",
+                    quality_score=quality_score
+                )
+
+            log.info(f"[说话人管理] 自动注册 unknown: {speaker_id}, 质量={quality_score:.2f}")
+
+            return RegisterResult(
+                speaker_id=speaker_id,
+                success=True,
+                message=f"未知说话人自动注册为 '{speaker_id}'",
+                quality_score=quality_score
+            )
+
+        except Exception as e:
+            log.error(f"[说话人管理] unknown 注册失败: {type(e).__name__}: {e}")
+            return RegisterResult(
+                speaker_id="",
+                success=False,
+                message=f"注册失败: {str(e)}",
+                quality_score=0.0
+            )
+
+    def rename_speaker(self, old_speaker_id: str, new_name: str) -> bool:
+        """
+        重命名说话人
+
+        Args:
+            old_speaker_id: 原 speaker_id（如 unknown_01）
+            new_name: 新名称（如 张三）
+
+        Returns:
+            是否成功
+        """
+        try:
+            # 1. 检查原说话人是否存在
+            existing = self.voiceprint_db.load_voiceprint(old_speaker_id)
+            if existing is None:
+                log.warn(f"[说话人管理] 重命名失败: 说话人 '{old_speaker_id}' 不存在")
+                return False
+
+            # 2. 生成新 ID
+            new_speaker_id = self._generate_speaker_id(new_name)
+
+            # 3. 检查新名称是否已存在
+            existing_speakers = self.list_speakers()
+            for speaker in existing_speakers:
+                if speaker.speaker_name == new_name:
+                    log.warn(f"[说话人管理] 重命名失败: 名称 '{new_name}' 已存在")
+                    return False
+
+            # 4. 调用数据库重命名
+            success = self.voiceprint_db.rename_speaker(old_speaker_id, new_speaker_id)
+            if not success:
+                return False
+
+            # 5. 更新 metadata
+            metadata = self.voiceprint_db.load_metadata(new_speaker_id) or {}
+            metadata["speaker_name"] = new_name
+            metadata["user_id"] = new_speaker_id
+            metadata["is_unknown"] = False
+            metadata["renamed_from"] = old_speaker_id
+            metadata["renamed_at"] = datetime.now().isoformat()
+
+            # 重新保存 metadata
+            embedding = self.voiceprint_db.load_voiceprint(new_speaker_id)
+            if embedding is not None:
+                self.voiceprint_db.save_voiceprint(
+                    speaker_id=new_speaker_id,
+                    embedding=embedding,
+                    metadata=metadata
+                )
+
+            # 6. 更新用户档案（如果可用）
+            if self.user_profile_db:
+                try:
+                    self._update_user_profile(new_speaker_id, new_name, metadata)
+                except Exception as e:
+                    log.warn(f"更新用户档案失败: {e}")
+
+            log.info(f"[说话人管理] 重命名成功: {old_speaker_id} -> {new_name} ({new_speaker_id})")
+            return True
+
+        except Exception as e:
+            log.error(f"[说话人管理] 重命名失败: {type(e).__name__}: {e}")
+            return False
+
     def update_voiceprint(
         self,
         speaker_id: str,

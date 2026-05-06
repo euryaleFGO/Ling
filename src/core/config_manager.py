@@ -113,6 +113,7 @@ class DiarizationConfig:
     notify_speaker_change: bool = True
     allow_concurrent_speakers: bool = False
     voiceprint_cleanup_days: int = 180
+    auto_register_unknown: bool = True
 
 
 @dataclass
@@ -531,6 +532,7 @@ class ConfigManager:
                 "notify_speaker_change": c.diarization.notify_speaker_change,
                 "allow_concurrent_speakers": c.diarization.allow_concurrent_speakers,
                 "voiceprint_cleanup_days": c.diarization.voiceprint_cleanup_days,
+                "auto_register_unknown": c.diarization.auto_register_unknown,
             },
             "interrupt": {
                 "enable_barge_in": c.interrupt.enable_barge_in,

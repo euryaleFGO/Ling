@@ -187,7 +187,47 @@ class ConversationDAO:
             .sort("created_at", -1)
             .limit(limit)
         )
-    
+
+    def get_sessions_by_date_range(
+        self,
+        user_id: str = "default_user",
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        status: Optional[str] = None,
+        limit: int = 50
+    ) -> List[Dict]:
+        """
+        按日期范围获取会话
+
+        Args:
+            user_id: 用户 ID
+            start_date: 开始日期（含）
+            end_date: 结束日期（含）
+            status: 会话状态过滤
+            limit: 最大返回数
+
+        Returns:
+            会话列表
+        """
+        query: Dict[str, Any] = {"user_id": user_id}
+
+        if status:
+            query["status"] = status
+
+        date_filter = {}
+        if start_date:
+            date_filter["$gte"] = start_date
+        if end_date:
+            date_filter["$lte"] = end_date
+        if date_filter:
+            query["created_at"] = date_filter
+
+        return list(
+            self.collection.find(query)
+            .sort("created_at", -1)
+            .limit(limit)
+        )
+
     def get_message_count(self, session_id: str) -> int:
         """获取会话消息数量"""
         session = self.get_session(session_id)

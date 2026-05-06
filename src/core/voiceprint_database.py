@@ -38,10 +38,14 @@ class VoiceprintDatabase:
         """
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
-        
+
         # 内存索引：{speaker_id: embedding}
         self._memory_index: Dict[str, np.ndarray] = {}
-        
+
+        # unknown 计数器
+        self._counter_file = self.storage_path / "_counter.json"
+        self._next_unknown_id: int = self._load_counter()
+
         # 加载所有声纹到内存
         self._load_all_to_memory()
 
@@ -54,6 +58,88 @@ class VoiceprintDatabase:
                 self._memory_index[speaker_id] = embedding
             except Exception as e:
                 logger.debug(f"Failed to load voiceprint file {npy_file.name}, skipping corrupted file: {e}")
+
+    def _load_counter(self) -> int:
+        """从 _counter.json 加载 unknown 计数器"""
+        if not self._counter_file.exists():
+            return 1
+        try:
+            with open(self._counter_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return int(data.get("next_unknown_id", 1))
+        except Exception as e:
+            logger.debug(f"Failed to load counter file: {e}")
+            return 1
+
+    def _save_counter(self) -> None:
+        """持久化 unknown 计数器"""
+        try:
+            with open(self._counter_file, 'w', encoding='utf-8') as f:
+                json.dump({"next_unknown_id": self._next_unknown_id}, f)
+        except Exception as e:
+            logger.warning(f"Failed to save counter file: {e}")
+
+    def get_next_unknown_id(self) -> str:
+        """
+        获取下一个 unknown 说话人 ID 并自增
+
+        Returns:
+            unknown_XX 格式的 ID
+        """
+        speaker_id = f"unknown_{self._next_unknown_id:02d}"
+        self._next_unknown_id += 1
+        self._save_counter()
+        return speaker_id
+
+    def rename_speaker(self, old_id: str, new_id: str) -> bool:
+        """
+        重命名说话人（重命名 .npy 和 .json 文件，更新内存索引）
+
+        Args:
+            old_id: 原 speaker_id
+            new_id: 新 speaker_id
+
+        Returns:
+            是否成功
+        """
+        try:
+            old_npy = self.storage_path / f"{old_id}.npy"
+            old_json = self.storage_path / f"{old_id}.json"
+            new_npy = self.storage_path / f"{new_id}.npy"
+            new_json = self.storage_path / f"{new_id}.json"
+
+            if not old_npy.exists():
+                logger.warning(f"Cannot rename: voiceprint '{old_id}' not found")
+                return False
+
+            # 检查目标是否已存在
+            if new_npy.exists():
+                logger.warning(f"Cannot rename: target '{new_id}' already exists")
+                return False
+
+            # 重命名文件
+            old_npy.rename(new_npy)
+            if old_json.exists():
+                old_json.rename(new_json)
+
+            # 更新内存索引
+            if old_id in self._memory_index:
+                self._memory_index[new_id] = self._memory_index.pop(old_id)
+
+            # 更新 metadata 中的 speaker_name
+            metadata = self.load_metadata(new_id)
+            if metadata:
+                metadata["speaker_name"] = new_id
+                metadata["user_id"] = new_id
+                json_path = self.storage_path / f"{new_id}.json"
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+            logger.info(f"Renamed speaker: {old_id} -> {new_id}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to rename speaker '{old_id}' to '{new_id}': {e}")
+            return False
 
     def save_voiceprint(
         self,

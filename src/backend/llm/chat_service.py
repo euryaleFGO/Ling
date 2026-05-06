@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Generator, Any
 import logging
 
 from .api_infer.openai_infer import APIInfer
-from .api_infer.config import DEEPSEEK_API_KEY, BASE_URL, MODEL
+from .api_infer.config import LLM_API_KEY, BASE_URL, MODEL
 from .memory.context_manager import ContextManager
 from .memory.long_term_memory import LongTermMemoryManager
 from .memory.memory_extractor import MemoryExtractor
@@ -39,7 +39,7 @@ class ChatService:
         # LLM 客户端
         self._llm = APIInfer(
             url=base_url or BASE_URL,
-            api_key=api_key or DEEPSEEK_API_KEY,
+            api_key=api_key or LLM_API_KEY,
             model_name=model or MODEL
         )
         

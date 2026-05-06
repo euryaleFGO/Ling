@@ -9,7 +9,9 @@ Designed to be mixed into ``AsyncConversationManager`` via multiple inheritance.
 import logging
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
+
+import numpy as np
 
 from core.log import log
 from core.audio_io import AudioInput, AudioOutput, AudioConfig
@@ -113,7 +115,7 @@ class ComponentInitMixin:
     # -- Init: ASR ----------------------------------------------------------
 
     def _init_asr(self: "AsyncConversationManager"):
-        """Initialise ASR (FunASR local or Whisper remote)."""
+        """Initialise ASR: remote first (if configured), then local fallback."""
         if self._asr is not None:
             return
 
@@ -122,8 +124,8 @@ class ComponentInitMixin:
             self._asr = None
             return
 
+        # 1. Whisper 远程
         provider = (self.config.asr.provider or "funasr").lower()
-
         if provider == "whisper":
             try:
                 from backend.asr.providers import WhisperRemoteProvider
@@ -136,7 +138,26 @@ class ComponentInitMixin:
                 self._asr = None
             return
 
-        # FunASR local
+        # 2. 远程 FunASR（优先）
+        remote_url = getattr(self.config.asr, "remote_url", None)
+        if remote_url:
+            try:
+                from backend.asr.providers import FunASRRemoteProvider
+                remote = FunASRRemoteProvider(base_url=remote_url)
+                if remote._client.health_check():
+                    self._asr = remote
+                    log.info(f"[conversation] ASR: remote ({remote_url})")
+                    return
+                else:
+                    log.warn(f"[conversation] ASR remote unavailable: {remote_url}, falling back to local")
+            except Exception as e:
+                log.warn(f"[conversation] ASR remote init failed: {e}, falling back to local")
+
+        # 3. 本地 FunASR（回退）
+        self._init_asr_local()
+
+    def _init_asr_local(self: "AsyncConversationManager"):
+        """Initialise local FunASR ASR."""
         try:
             from backend.asr.providers import FunASRProvider
 
@@ -172,15 +193,15 @@ class ComponentInitMixin:
                     encoder_chunk_look_back=stream_cfg.get("encoder_chunk_look_back"),
                     decoder_chunk_look_back=stream_cfg.get("decoder_chunk_look_back"),
                 )
-                log.debug(
-                    f"[conversation] ASR: FunASR local (device={asr_device}, "
+                log.info(
+                    f"[conversation] ASR: local FunASR (device={asr_device}, "
                     f"chunk={stream_cfg.get('chunk_size')})"
                 )
             else:
                 log.warn(f"ASR model directory does not exist: {model_dir}")
                 self._asr = None
         except Exception as e:
-            log.warn(f"ASR init failed: {e}")
+            log.warn(f"ASR local init failed: {e}")
             self._asr = None
 
     # -- Init: TTS ----------------------------------------------------------
@@ -279,6 +300,120 @@ class ComponentInitMixin:
             log.error(f"Agent init failed: {e}")
             raise
 
+    # -- Init: Diarization -------------------------------------------------
+
+    def _init_diarization(self: "AsyncConversationManager"):
+        """Initialise voiceprint diarization (speaker identification)."""
+        if not self.config.diarization.enable:
+            log.debug("[conversation] Diarization disabled in config")
+            return
+
+        if self._diarization is not None:
+            return
+
+        try:
+            from core.sv_engine import SVEngine
+            from core.voiceprint_database import VoiceprintDatabase
+            from core.diarization_engine import DiarizationEngine
+            from core.speaker_manager import SpeakerManager
+
+            # 1. 初始化声纹引擎
+            sv_device = self.config.diarization.device
+            if sv_device == "auto":
+                try:
+                    import torch
+                    sv_device = "cuda:0" if torch.cuda.is_available() else "cpu"
+                except Exception:
+                    sv_device = "cpu"
+
+            sv_model = self.config.diarization.model_id or "campplus"
+            self._sv = SVEngine(model_id=sv_model, device=sv_device)
+            log.info(f"[conversation] SVEngine ready (model={sv_model}, device={sv_device})")
+
+            # 2. 初始化声纹数据库
+            storage_path = self.config.diarization.storage_path
+            if not storage_path:
+                storage_path = str(_PROJECT_ROOT / "data" / "voiceprints")
+            self._voiceprint_db = VoiceprintDatabase(storage_path=Path(storage_path))
+            log.info(f"[conversation] VoiceprintDatabase ready ({storage_path})")
+
+            # 3. 初始化 SpeakerManager（用于 unknown 注册和改名）
+            self._speaker_manager = SpeakerManager(
+                sv_engine=self._sv,
+                voiceprint_db=self._voiceprint_db,
+            )
+
+            # 4. 初始化 DiarizationEngine
+            self._diarization = DiarizationEngine(
+                sv_engine=self._sv,
+                voiceprint_db=self._voiceprint_db,
+                threshold=self.config.diarization.threshold,
+                min_audio_sec=self.config.diarization.min_audio_sec,
+                device=sv_device,
+                timeout_ms=self.config.diarization.timeout_ms,
+                speaker_manager=self._speaker_manager,
+            )
+
+            # 注入 speaker_manager 到 Agent（如果已初始化）
+            if self._agent and hasattr(self._agent, 'set_speaker_manager'):
+                self._agent.set_speaker_manager(self._speaker_manager)
+
+            log.info(
+                f"[conversation] Diarization ready "
+                f"(threshold={self.config.diarization.threshold}, "
+                f"auto_register={getattr(self.config.diarization, 'auto_register_unknown', True)})"
+            )
+
+        except Exception as e:
+            log.warn(f"Diarization init failed: {e}")
+            self._diarization = None
+            self._sv = None
+            self._voiceprint_db = None
+            self._speaker_manager = None
+
+    def _identify_speaker(self: "AsyncConversationManager", audio: np.ndarray) -> Optional[str]:
+        """
+        识别音频中的说话人
+
+        Args:
+            audio: 音频数据
+
+        Returns:
+            speaker_id 或 None
+        """
+        if self._diarization is None:
+            return None
+
+        try:
+            result = self._diarization.identify(
+                audio,
+                sample_rate=self.config.audio.sample_rate,
+            )
+
+            if result.speaker_id and result.speaker_id != "unknown":
+                old_user_id = self._current_user_id
+                self._current_user_id = result.speaker_id
+
+                # 更新 Agent 的 user_id
+                if self._agent:
+                    self._agent.user_id = result.speaker_id
+
+                if old_user_id != result.speaker_id:
+                    log.info(f"[conversation] Speaker changed: {old_user_id} -> {result.speaker_id} (score={result.score:.3f})")
+                    if self._on_speaker_change_callback:
+                        try:
+                            self._on_speaker_change_callback(result.speaker_id, result.score)
+                        except Exception as e:
+                            log.debug(f"Speaker change callback failed: {e}")
+
+                return result.speaker_id
+
+            return result.speaker_id
+
+        except Exception as e:
+            log.warning(f"[conversation] Speaker identification failed: {e}")
+            return None
+
     # -- Init: Audio devices ------------------------------------------------
 
     def _init_audio(self: "AsyncConversationManager"):
@@ -292,7 +427,7 @@ class ComponentInitMixin:
         vad_config = VADConfig.preset(self.config.audio.vad_preset)
         vad_config.backend = self.config.audio.vad_backend
         vad_config.silence_duration = self.config.audio.silence_duration
-        vad_config.min_speech_chunks = max(2, vad_config.min_speech_chunks)
+        # 不再强制覆盖 min_speech_chunks，使用 preset 默认值（balanced=1）
         vad_config.hangover_chunks = max(1, vad_config.hangover_chunks)
         vad_config.pre_buffer_chunks = max(2, vad_config.pre_buffer_chunks)
 
@@ -315,4 +450,5 @@ class ComponentInitMixin:
         self._init_audio()
         self._init_tts()
         self._init_agent()
+        self._init_diarization()
         log.info("Async conversation system initialised")

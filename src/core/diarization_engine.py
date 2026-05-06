@@ -25,7 +25,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
-from src.core.sv_engine import SVEngine
+from core.sv_engine import SVEngine
 
 log = logging.getLogger(__name__)
 
@@ -66,11 +66,12 @@ class DiarizationEngine:
         min_audio_sec: float = 0.8,
         device: str = "auto",
         timeout_ms: int = 500,
-        max_failures: int = 3
+        max_failures: int = 3,
+        speaker_manager=None,  # Optional[SpeakerManager]
     ):
         """
         初始化识别引擎
-        
+
         Args:
             sv_engine: 声纹提取引擎（复用现有 SVEngine）
             voiceprint_db: 声纹数据库
@@ -79,6 +80,7 @@ class DiarizationEngine:
             device: 运行设备 ("auto" | "cpu" | "cuda")
             timeout_ms: 识别超时时间（毫秒）
             max_failures: 最大连续失败次数
+            speaker_manager: 说话人管理器（可选，用于自动注册 unknown）
         """
         self.sv_engine = sv_engine
         self.voiceprint_db = voiceprint_db
@@ -86,6 +88,7 @@ class DiarizationEngine:
         self.min_audio_sec = float(min_audio_sec)
         self.device = device
         self.timeout_ms = int(timeout_ms)
+        self.speaker_manager = speaker_manager
         
         # 缓存机制（避免重复计算）
         self._embedding_cache: Dict[str, np.ndarray] = {}
@@ -248,6 +251,26 @@ class DiarizationEngine:
         
         # 判断是否识别成功
         if speaker_id is None:
+            # 自动注册 unknown 说话人
+            if self.speaker_manager is not None:
+                try:
+                    result = self.speaker_manager.register_unknown(audio, sample_rate)
+                    if result.success:
+                        new_id = result.speaker_id
+                        self._last_speaker_id = new_id
+                        log.info(f"[说话人识别] 自动注册 unknown: {new_id}")
+                        return DiarizationResult(
+                            speaker_id=new_id,
+                            score=0.0,
+                            reason=f"new_unknown_registered:{new_id}",
+                            duration_sec=duration_sec,
+                            is_confident=False
+                        )
+                    else:
+                        log.warning(f"[说话人识别] unknown 注册失败: {result.message}")
+                except Exception as e:
+                    log.warning(f"[说话人识别] unknown 注册异常: {e}")
+
             return DiarizationResult(
                 speaker_id="unknown",
                 score=score,

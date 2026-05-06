@@ -19,6 +19,7 @@ from .skill_generator_tool import SkillGeneratorTool
 from .diagnose_tool import DiagnoseTool
 from .auto_fix_tool import AutoFixTool
 from .code_modify_tool import CodeModifyTool
+from .speaker_manage_tool import SpeakerManageTool
 
 __all__ = [
     "BaseTool",
@@ -42,4 +43,5 @@ __all__ = [
     "DiagnoseTool",
     "AutoFixTool",
     "CodeModifyTool",
+    "SpeakerManageTool",
 ]

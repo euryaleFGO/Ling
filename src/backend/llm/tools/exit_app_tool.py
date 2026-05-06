@@ -41,9 +41,9 @@ class ExitAppTool(BaseTool):
     def execute(self, **kwargs) -> ToolResult:
         reason = kwargs.get("reason", "用户告别，准备退出应用")
         try:
-            from core.exit_signal import request_exit
+            from core.exit_signal import pending_exit
 
-            request_exit(reason=reason)
+            pending_exit(reason=reason)
             return ToolResult(
                 success=True,
                 data={

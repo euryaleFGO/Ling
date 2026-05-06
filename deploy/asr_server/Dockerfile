@@ -1,31 +1,32 @@
 FROM python:3.10-slim
 
-# 设置工作目录
+# System deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential libsndfile1 ffmpeg curl && \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-# 安装系统依赖
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    libsndfile1 \
-    ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+# Install Python deps first (cached layer)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# 复制项目文件
-COPY . /app
+# Copy server code (self-contained, no project dependency)
+COPY server.py .
 
-# 安装 Python 依赖
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r deploy/asr_server/requirements.txt
+# Optional: pre-download models (uncomment to bake into image)
+# RUN python -c "\
+# from funasr import AutoModel; \
+# AutoModel(model='paraformer-zh-streaming', device='cpu'); \
+# AutoModel(model='fsmn-vad', device='cpu')"
 
-# 创建日志目录
-RUN mkdir -p /app/deploy/asr_server/logs
+RUN mkdir -p /app/logs
 
-# 暴露端口
 EXPOSE 5002
 
-# 设置环境变量
 ENV PYTHONUNBUFFERED=1
-ENV FUNASR_CACHE_DIR=/app/.cache/funasr
+ENV ASR_DEVICE=auto
+ENV ASR_HOST=0.0.0.0
+ENV ASR_PORT=5002
 
-# 启动服务器
-CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5002", "--timeout", "300", "--chdir", "/app/deploy/asr_server", "server:app"]
+CMD ["gunicorn", "-w", "1", "-b", "0.0.0.0:5002", "--timeout", "300", "server:app"]

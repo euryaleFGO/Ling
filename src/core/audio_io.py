@@ -166,6 +166,49 @@ class AudioInput:
             self._stream.close()
             self._stream = None
         log.debug("麦克风监听已停止")
+
+    def pause_for_tts(self):
+        """暂停麦克风（TTS 播报期间防止回声拾取）。"""
+        if self._stream and self._is_listening:
+            self._stream.stop()
+            self._stream.close()
+            self._stream = None
+            log.debug("[AudioIO] mic paused for TTS")
+        else:
+            log.debug(f"[AudioIO] mic pause skipped (stream={self._stream is not None}, listening={self._is_listening})")
+
+    def resume_after_tts(self):
+        """TTS 播报完毕后恢复麦克风。"""
+        if not self._is_listening:
+            log.debug("[AudioIO] mic resume skipped (not listening)")
+            return
+        if self._stream is not None:
+            log.debug("[AudioIO] mic resume skipped (stream already active)")
+            return  # 已在运行
+        flushed = self.flush_buffer()
+        self._vad.reset()
+        log.debug(f"[AudioIO] mic resuming (flushed {flushed} stale chunks)")
+
+        def audio_callback(indata, frames, time_info, status):
+            if status:
+                log.debug(f"[AudioIO] 状态: {status}")
+            audio_data = indata.copy().flatten()
+            self._audio_buffer.put(audio_data)
+            for cb in self._callbacks:
+                try:
+                    cb(audio_data)
+                except Exception as e:
+                    log.error(f"[AudioIO] 回调错误: {e}")
+
+        self._stream = sd.InputStream(
+            samplerate=self.config.sample_rate,
+            channels=self.config.channels,
+            dtype=self.config.dtype,
+            blocksize=self.config.chunk_size,
+            callback=audio_callback,
+        )
+        self._stream.start()
+        log.debug("[AudioIO] mic resumed after TTS")
     
     def get_audio_chunk(self, timeout: float = 0.1) -> Optional[np.ndarray]:
         """获取一个音频块"""

@@ -14,14 +14,31 @@ from typing import Optional
 _event = threading.Event()
 _lock = threading.Lock()
 _reason = ""
+_pending_reason = ""
 
 
 def request_exit(reason: str = "") -> None:
-    """发起退出请求。"""
+    """发起退出请求（立即生效）。"""
     global _reason
     with _lock:
         _reason = (reason or "").strip()
         _event.set()
+
+
+def pending_exit(reason: str = "") -> None:
+    """暂存退出请求（不立即生效，等 TTS 播完后再触发）。"""
+    global _pending_reason
+    with _lock:
+        _pending_reason = (reason or "").strip()
+
+
+def consume_pending_exit() -> Optional[str]:
+    """消费暂存的退出请求，返回原因（无暂存则返回 None）。"""
+    global _pending_reason
+    with _lock:
+        reason = _pending_reason
+        _pending_reason = ""
+        return reason or None
 
 
 def is_exit_requested() -> bool:

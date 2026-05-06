@@ -3,7 +3,7 @@ import os
 from typing import List, Dict, Optional
 
 from openai import OpenAI
-from .config import DEEPSEEK_API_KEY, BASE_URL, MODEL
+from .config import LLM_API_KEY, BASE_URL, MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ class APIInfer:
 if __name__ == "__main__":
     
     url = BASE_URL
-    api_key = DEEPSEEK_API_KEY
+    api_key = LLM_API_KEY
     model_name = MODEL
     apiinfer = APIInfer(url=url,api_key=api_key,model_name=model_name)
     

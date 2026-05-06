@@ -14,6 +14,8 @@ import time
 from collections.abc import AsyncIterator
 from typing import Optional, TYPE_CHECKING
 
+import numpy as np
+
 from core.log import log
 from core.performance_metrics import ASRMetrics
 
@@ -92,11 +94,13 @@ class MessageHandlerMixin:
 
     def _listen_with_asr(self: "AsyncConversationManager") -> Optional[str]:
         """Listen via ASR (synchronous, called from ``asyncio.to_thread``)."""
-        log.info("Please speak ...")
+        asr_type = type(self._asr).__name__
+        log.info(f"Please speak ... [ASR: {asr_type}]")
 
         t_start = time.monotonic()
         t_first_chunk = None
         audio_start = None
+        chunk_count = 0
 
         streaming_parts: list[str] = []
         merged_stream_ref = [""]
@@ -110,7 +114,8 @@ class MessageHandlerMixin:
             log.debug("Speech detected ...")
 
         def on_chunk(chunk):
-            nonlocal t_first_chunk
+            nonlocal t_first_chunk, chunk_count
+            chunk_count += 1
             if self._asr:
                 result = self._asr.feed_audio(chunk)
                 if result and supports_streaming:
@@ -130,6 +135,7 @@ class MessageHandlerMixin:
 
         self._asr.start_stream()
 
+        log.debug(f"[ASR] stream started, supports_streaming={supports_streaming}")
         self._audio_input.record_until_silence(
             on_speech_start=on_speech_start,
             on_chunk=on_chunk,
@@ -151,6 +157,24 @@ class MessageHandlerMixin:
             and final in merged_stream
         ):
             final = merged_stream
+
+        # 离线兜底：流式结果差时用完整音频重新识别
+        if full_audio is not None and len(full_audio) > 0:
+            duration_sec = len(full_audio) / max(1, self.config.audio.sample_rate)
+            if not final or len(final) <= 2:
+                if duration_sec >= 0.35:
+                    try:
+                        a = full_audio.flatten()
+                        rms = float(np.sqrt(np.mean(a ** 2))) if a.size > 0 else 0
+                        if rms >= 0.002:
+                            offline = self._asr.recognize_audio(
+                                full_audio, self.config.audio.sample_rate,
+                            )
+                            if offline and len(offline) > len(final or ""):
+                                log.info(f"[ASR] 离线兜底: '{final}' -> '{offline.strip()}'")
+                                final = offline.strip()
+                    except Exception as e:
+                        log.warn(f"离线识别失败: {e}")
 
         # Record ASR performance metrics
         t_end = time.monotonic()
@@ -177,6 +201,15 @@ class MessageHandlerMixin:
                 f"[ASR perf] first-chunk: {first_chunk_latency_ms:.1f}ms, "
                 f"total: {total_latency_ms:.1f}ms, RTF: {rtf:.3f}"
             )
+
+        # Speaker identification (after ASR, before return)
+        if final and full_audio is not None and self._diarization is not None:
+            try:
+                speaker_id = self._identify_speaker(full_audio)
+                if speaker_id:
+                    log.debug(f"[ASR] speaker identified: {speaker_id}")
+            except Exception as e:
+                log.debug(f"[ASR] speaker identification skipped: {e}")
 
         if final:
             log.debug(f"[ASR] final: '{final}'")

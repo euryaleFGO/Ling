@@ -89,6 +89,9 @@ class TTSPipelineMixin:
 
         ``None`` is the end sentinel.  Cancelling the task propagates
         ``CancelledError`` naturally.
+
+        麦克风在 TTS 播报期间保持开启，用于用户打断（barge-in）检测。
+        TTS 回声由 listen 循环开始时的 buffer flush 清除。
         """
         while True:
             item = await pending.get()
@@ -131,21 +134,28 @@ class TTSPipelineMixin:
                     audio_duration = len(audio) / max(1, self._tts.sample_rate)
                     total_audio_duration += audio_duration
 
-                    await asyncio.to_thread(
-                        self._audio_output.play_array,
-                        audio,
-                        self._tts.sample_rate,
-                        blocking=True,
+                    # 播放音频与 viseme 并行，避免嘴型延迟
+                    audio_task = asyncio.create_task(
+                        asyncio.to_thread(
+                            self._audio_output.play_array,
+                            audio,
+                            self._tts.sample_rate,
+                            blocking=True,
+                        )
                     )
 
                     if visemes and self._on_viseme:
-                        asyncio.create_task(
+                        viseme_task = asyncio.create_task(
                             self._send_visemes_async(visemes, audio, self._tts.sample_rate)
                         )
+                        await asyncio.gather(audio_task, viseme_task)
                     elif self._on_audio_rms:
-                        asyncio.create_task(
+                        rms_task = asyncio.create_task(
                             self._send_rms_async(audio, self._tts.sample_rate)
                         )
+                        await asyncio.gather(audio_task, rms_task)
+                    else:
+                        await audio_task
 
                 # Record TTS performance metrics
                 t_tts_end = time.monotonic()
@@ -172,6 +182,10 @@ class TTSPipelineMixin:
                         f"total: {total_latency_ms:.1f}ms, RTF: {rtf:.3f}"
                     )
 
+            except asyncio.CancelledError:
+                # 打断：TTS 被取消，停止播放
+                log.info("[TTS] cancelled (user interrupt)")
+                raise
             except Exception as exc:
                 log.error(f"TTS playback failed: {exc}")
 
