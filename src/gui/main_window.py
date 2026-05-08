@@ -16,7 +16,7 @@ from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QIcon, QFont
 from pathlib import Path
 
-from gui.pages import CharacterPage, ApiPage, DatabasePage, SpeakerPage, GeneralPage
+from gui.pages import CharacterPage, ApiPage, DatabasePage, SpeakerPage, GeneralPage, AsrPage
 import platform
 import subprocess
 import time
@@ -66,6 +66,7 @@ class MainWindow(QMainWindow):
         self.pages = {
             'character': CharacterPage(),
             'api': ApiPage(),
+            'asr': AsrPage(),
             'database': DatabasePage(),
             'speaker': SpeakerPage(),
             'general': GeneralPage(),
@@ -254,6 +255,7 @@ class MainWindow(QMainWindow):
         nav_items = [
             ('character', '🎭', '角色设定'),
             ('api', '🔑', 'API 配置'),
+            ('asr', '🎤', '语音识别'),
             ('database', '💾', '数据库管理'),
             ('speaker', '🎙️', '说话人管理'),
             ('general', '⚙️', '通用设置'),
