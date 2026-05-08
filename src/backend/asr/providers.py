@@ -6,6 +6,11 @@ ASR 提供商抽象层
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+import queue
+import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional, Union, List
@@ -203,12 +208,12 @@ class WhisperRemoteProvider(ASRProvider):
 class FunASRRemoteProvider(ASRProvider):
     """
     远程 FunASR 服务（自建服务器）
-    
+
     - 本地麦克风采集，发送到远程服务器识别
     - 不支持流式，录音结束整段发送
     - 比 Whisper API 更快，适合自建服务器
     """
-    
+
     def __init__(
         self,
         base_url: str = "http://localhost:5002",
@@ -218,22 +223,22 @@ class FunASRRemoteProvider(ASRProvider):
         config = RemoteASRConfig(base_url=base_url, language=language)
         self._client = RemoteASRClient(config)
         self._buffer: list = []
-    
+
     @property
     def supports_streaming(self) -> bool:
         return False
-    
+
     def get_chunk_stride(self) -> int:
         return 5760  # 与 FunASR 兼容
-    
+
     def start_stream(self) -> None:
         self._buffer = []
-    
+
     def feed_audio(self, chunk: np.ndarray) -> str:
         """缓冲音频，不支持实时流式"""
         self._buffer.append(chunk.copy())
         return ""
-    
+
     def end_stream(self, chunk: Optional[np.ndarray] = None) -> str:
         if chunk is not None:
             self._buffer.append(chunk)
@@ -242,6 +247,269 @@ class FunASRRemoteProvider(ASRProvider):
         full = np.concatenate(self._buffer)
         self._buffer = []
         return self.recognize_audio(full, 16000)
-    
+
     def recognize_audio(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
         return self._client.recognize_audio(audio, sample_rate)
+
+
+class FunASRWebSocketProvider(ASRProvider):
+    """
+    FunASR WebSocket 流式 ASR 客户端
+
+    通过 WebSocket 长连接实现真正的流式识别。
+    适配 FunASR real-time server（funasr bin/asr_online_server.py）。
+    """
+
+    def __init__(
+        self,
+        uri: str = "ws://localhost:10095",
+        chunk_size: Optional[List[int]] = None,
+        encoder_chunk_look_back: int = 4,
+        decoder_chunk_look_back: int = 1,
+    ):
+        self.uri = uri
+        self._chunk_size = chunk_size or [5, 10, 5]
+        self._enc_look_back = encoder_chunk_look_back
+        self._dec_look_back = decoder_chunk_look_back
+        self._client = _FunASRWSClient(
+            uri, self._chunk_size,
+            self._enc_look_back, self._dec_look_back,
+        )
+        self._client.start()
+
+    @property
+    def supports_streaming(self) -> bool:
+        return True
+
+    def get_chunk_stride(self) -> int:
+        # chunk_size[1] * 60 = 10 * 60 = 600 samples = 600/16000 = 37.5ms per stride
+        # FunASR 2-pass: chunk_size = [5, 10, 5], stride = 600 samples
+        return self._chunk_size[1] * 60
+
+    def start_stream(self) -> None:
+        self._client.start_stream()
+
+    def feed_audio(self, chunk: np.ndarray) -> str:
+        return self._client.feed_audio(chunk)
+
+    def end_stream(self, chunk: Optional[np.ndarray] = None) -> str:
+        return self._client.end_stream(chunk)
+
+    def recognize_audio(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
+        """批量识别：缓冲音频 → start → feed → end"""
+        self._client.start_stream()
+        # 分块发送
+        stride = self.get_chunk_stride()
+        audio_int16 = audio
+        if audio.dtype == np.float32:
+            audio_int16 = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
+        for i in range(0, len(audio_int16), stride):
+            chunk = audio_int16[i:i + stride]
+            self._client.feed_audio(chunk)
+        return self._client.end_stream()
+
+    def health_check(self, timeout: float = 5.0) -> bool:
+        """Check if WebSocket connection is available"""
+        import time
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._client.connected:
+                return True
+            time.sleep(0.2)
+        return False
+
+    def stop(self):
+        """关闭 WebSocket 连接"""
+        if self._client:
+            self._client.stop()
+
+
+class _FunASRWSClient:
+    """FunASR WebSocket 底层客户端（后台线程运行事件循环）"""
+
+    def __init__(self, uri, chunk_size, enc_look_back, dec_look_back):
+        self.uri = uri
+        self._chunk_size = chunk_size
+        self._enc_look_back = enc_look_back
+        self._dec_look_back = dec_look_back
+
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
+        self._ws = None
+        self._connected = False
+        self._running = False
+
+        # 结果收集
+        self._result_queue: queue.Queue = queue.Queue()
+        self._last_text = ""
+
+        # 流式回调（可选）
+        self.on_partial_result: Optional[callable] = None
+
+        # 日志
+        try:
+            from core.log import log as _log
+            self._log = _log
+        except ImportError:
+            self._log = logging.getLogger(__name__)
+
+    def start(self):
+        """启动后台事件循环和连接"""
+        if self._running:
+            return
+        self._running = True
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._run_loop, daemon=True, name="FunASR-WS")
+        self._thread.start()
+
+    def stop(self):
+        """停止连接和事件循环"""
+        self._running = False
+        if self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._thread:
+            self._thread.join(timeout=3)
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    def _run_loop(self):
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_until_complete(self._connect_loop())
+
+    async def _connect_loop(self):
+        """保持连接，断线自动重连"""
+        first = True
+        while self._running:
+            try:
+                await self._connect_and_listen()
+                first = True  # 连接成功过，重置
+            except Exception as e:
+                self._connected = False
+                if self._running:
+                    level = self._log.warn if first else self._log.debug
+                    level(f"[ASR-WS] 连接失败: {e}")
+                    first = False
+                    await asyncio.sleep(2)
+
+    async def _connect_and_listen(self):
+        """建立连接，发送配置，持续监听服务端消息"""
+        import websockets
+        import ssl as _ssl
+        self._log.info(f"[ASR-WS] 连接: {self.uri}")
+
+        # wss:// 自签名证书兼容
+        ssl_ctx = None
+        if self.uri.startswith("wss://"):
+            ssl_ctx = _ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = _ssl.CERT_NONE
+
+        async with websockets.connect(
+            self.uri, max_size=2**22,
+            ssl=ssl_ctx,
+            open_timeout=10,
+            close_timeout=5,
+        ) as ws:
+            self._ws = ws
+            self._connected = True
+            self._log.info(f"[ASR-WS] 已连接")
+
+            # 发送初始配置（匹配 FunASR 2pass 服务端协议）
+            config = {
+                "mode": "2pass",
+                "chunk_size": self._chunk_size,
+                "chunk_interval": 10,
+                "encoder_chunk_look_back": self._enc_look_back,
+                "decoder_chunk_look_back": self._dec_look_back,
+                "wav_name": "microphone",
+                "is_speaking": True,
+                "wav_format": "pcm",
+                "audio_fs": 16000,
+                "itn": True,
+                "hotwords": "",
+            }
+            await ws.send(json.dumps(config))
+
+            # 持续接收服务端消息
+            async for msg in ws:
+                if isinstance(msg, str):
+                    try:
+                        data = json.loads(msg)
+                        text = data.get("text", "")
+                        is_final = data.get("is_final", False)
+                        mode = data.get("mode", "")
+                        if text:
+                            self._last_text = text
+                            if self.on_partial_result and not is_final:
+                                try:
+                                    self.on_partial_result(text)
+                                except Exception:
+                                    pass
+                            if is_final:
+                                self._result_queue.put(text)
+                    except json.JSONDecodeError:
+                        pass
+
+    def start_stream(self):
+        """开始新一轮识别"""
+        # 清空旧结果
+        while not self._result_queue.empty():
+            try:
+                self._result_queue.get_nowait()
+            except queue.Empty:
+                break
+        self._last_text = ""
+
+    def feed_audio(self, chunk: np.ndarray) -> str:
+        """发送音频块，返回当前累积结果"""
+        if not self._connected or self._ws is None:
+            return ""
+        # 收集已有中间结果
+        text = ""
+        while not self._result_queue.empty():
+            try:
+                text = self._result_queue.get_nowait()
+            except queue.Empty:
+                break
+        # float32 → int16 bytes
+        pcm_bytes = self._to_pcm_bytes(chunk)
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._ws.send(pcm_bytes), self._loop
+            ).result(timeout=2)
+        except Exception as e:
+            self._log.debug(f"[ASR-WS] 发送失败: {e}")
+        return text or self._last_text
+
+    def end_stream(self, chunk: Optional[np.ndarray] = None) -> str:
+        """结束当前识别，返回最终结果"""
+        if chunk is not None:
+            self.feed_audio(chunk)
+
+        if not self._connected or self._ws is None:
+            return ""
+
+        # 发送结束信号
+        try:
+            end_msg = json.dumps({"is_speaking": False})
+            asyncio.run_coroutine_threadsafe(
+                self._ws.send(end_msg), self._loop
+            ).result(timeout=2)
+        except Exception as e:
+            self._log.debug(f"[ASR-WS] 发送结束信号失败: {e}")
+
+        # 等待最终结果（最多 10 秒）
+        final_text = ""
+        try:
+            final_text = self._result_queue.get(timeout=10)
+        except queue.Empty:
+            final_text = self._last_text
+
+        return final_text
+
+    def _to_pcm_bytes(self, audio: np.ndarray) -> bytes:
+        if audio.dtype == np.float32:
+            audio = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
+        return audio.tobytes()
