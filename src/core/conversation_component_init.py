@@ -538,3 +538,42 @@ class ComponentInitMixin:
         self._init_ser()
         self._init_diarization()
         log.info("Async conversation system initialised")
+
+    # -- Hot-reload helpers -------------------------------------------------
+
+    def reload_asr(self: "AsyncConversationManager"):
+        """Reload ASR provider with current config."""
+        if self._asr and hasattr(self._asr, 'stop'):
+            try:
+                self._asr.stop()
+            except Exception:
+                pass
+        self._asr = None
+        self._init_asr()
+        log.info("[conversation] ASR reloaded")
+
+    def reload_tts(self: "AsyncConversationManager"):
+        """Reload TTS provider with current config."""
+        if self._tts:
+            try:
+                if hasattr(self._tts, 'cleanup'):
+                    self._tts.cleanup()
+            except Exception:
+                pass
+        self._tts = None
+        self._tts_mode = None
+        self._tts_cache = None
+        self._init_tts()
+        log.info("[conversation] TTS reloaded")
+
+    def reload_component(self: "AsyncConversationManager", name: str):
+        """Reload a specific component by name."""
+        reload_map = {
+            "asr": self.reload_asr,
+            "tts": self.reload_tts,
+        }
+        fn = reload_map.get(name)
+        if fn:
+            fn()
+        else:
+            log.warn(f"[conversation] Unknown component for reload: {name}")

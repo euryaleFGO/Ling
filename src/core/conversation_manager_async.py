@@ -69,6 +69,7 @@ class AsyncConversationManager(
         self._asr = None
         self._tts = None
         self._tts_mode = None
+        self._singing = None  # DiffSinger 歌声合成引擎
         self._agent = None
         self._audio_input = None
         self._audio_output = None
@@ -107,6 +108,9 @@ class AsyncConversationManager(
 
         # Interrupt stats
         self._interrupt_count: int = 0
+
+        # Barge-in interrupt detection (P0-2)
+        self._interrupt_detected: bool = False
 
         # Deduplication (Yione)
         self._last_submitted: dict[str, float] = {}
@@ -255,7 +259,20 @@ class AsyncConversationManager(
 
             await pending.put(None)
             self._set_state(ConversationState.SPEAKING)
+
+            # 启动打断检测（P0-2）
+            if self.config.interrupt.enable_barge_in and self._audio_input:
+                self._interrupt_detected = False
+                self._audio_input.start_interrupt_detection(
+                    on_interrupt=self._on_barge_in_detected,
+                    config=self.config.interrupt,
+                )
+
             await worker
+
+            # 停止打断检测
+            if self._audio_input:
+                self._audio_input.stop_interrupt_detection()
 
             log.info(f"[{time.monotonic() - t0:.2f}s] All segments played")
             self._set_state(ConversationState.IDLE)
@@ -284,6 +301,15 @@ class AsyncConversationManager(
 
         except asyncio.CancelledError:
             interrupted = True
+            # 立即停止音频播放
+            try:
+                import sounddevice as sd
+                sd.stop()
+            except Exception:
+                pass
+            # 停止打断检测
+            if self._audio_input:
+                self._audio_input.stop_interrupt_detection()
             # 用户打断 -> 丢弃暂存的退出请求，对话继续
             exit_signal.consume_pending_exit()
             # 确保麦克风不会停留在暂停状态
@@ -314,6 +340,15 @@ class AsyncConversationManager(
             raise
         except Exception:
             logger.exception("Turn failed")
+            # 停止打断检测
+            if self._audio_input:
+                self._audio_input.stop_interrupt_detection()
+            # 立即停止音频播放
+            try:
+                import sounddevice as sd
+                sd.stop()
+            except Exception:
+                pass
             # 异常时也丢弃暂存退出，确保麦克风恢复
             exit_signal.consume_pending_exit()
             if self._audio_input:
@@ -378,6 +413,19 @@ class AsyncConversationManager(
         """Start a new turn as an asyncio task."""
         self._current_turn = asyncio.create_task(self._handle_user_message(user_text))
 
+    def _on_barge_in_detected(self) -> None:
+        """打断检测回调：设置标志并取消当前 turn。"""
+        log.info("[barge-in] User speech detected during TTS, interrupting")
+        self._interrupt_detected = True
+        if self._current_turn and not self._current_turn.done():
+            # 在事件循环中取消当前 turn
+            try:
+                loop = self._current_turn.get_loop()
+                loop.call_soon_threadsafe(self._current_turn.cancel)
+            except Exception:
+                # fallback: 直接设置标志，TTS worker 会在下一个 chunk 检查
+                pass
+
     # ============================================================
     #  Deduplication
     # ============================================================
@@ -400,6 +448,35 @@ class AsyncConversationManager(
         return True
 
     # ============================================================
+    #  Config hot-reload
+    # ============================================================
+
+    def _hot_reload_components(self):
+        """Check for config changes and reload ASR/TTS if needed."""
+        from core.config_manager import get_config_manager
+        cm = get_config_manager()
+        if not cm.check_for_updates():
+            return
+
+        log.info("[conversation] Config file changed, reloading components ...")
+        old_asr_provider = self.config.asr.provider
+        old_asr_remote = self.config.asr.remote_url
+        old_tts_remote = self.config.tts.remote_url
+
+        cm.reload_if_changed()
+
+        # Check if ASR config changed
+        if (self.config.asr.provider != old_asr_provider or
+                self.config.asr.remote_url != old_asr_remote):
+            log.info("[conversation] ASR config changed, reloading ...")
+            self.reload_asr()
+
+        # Check if TTS config changed
+        if self.config.tts.remote_url != old_tts_remote:
+            log.info("[conversation] TTS config changed, reloading ...")
+            self.reload_tts()
+
+    # ============================================================
     #  Main loop
     # ============================================================
 
@@ -414,6 +491,12 @@ class AsyncConversationManager(
 
         try:
             while self._running.is_set():
+                # 检查配置文件更新
+                try:
+                    self._hot_reload_components()
+                except Exception as e:
+                    log.warn(f"[conversation] Config hot-reload failed: {e}")
+
                 # 检查 exit_app 工具是否请求了退出
                 if exit_signal.is_exit_requested():
                     reason = exit_signal.consume_exit_request()
@@ -456,6 +539,7 @@ class AsyncConversationManager(
                     traceback.print_exc()
                     await asyncio.sleep(1)
         finally:
+            self._running.clear()
             # 退出时关闭会话，生成摘要
             if self._agent:
                 try:
@@ -551,6 +635,10 @@ class AsyncConversationManager(
             self._session_scheduler.stop()
         if hasattr(self, '_dream_scheduler') and self._dream_scheduler:
             self._dream_scheduler.stop()
+
+        # 清理歌声合成引擎
+        if self._singing and hasattr(self._singing, 'cleanup'):
+            self._singing.cleanup()
 
         if self._audio_output:
             self._audio_output.stop()
