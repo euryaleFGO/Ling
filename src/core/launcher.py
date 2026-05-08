@@ -9,7 +9,7 @@ import threading
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QDialog, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton, QLabel
+from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QDialog, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton, QLabel, QWidget
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtCore import Qt
 
@@ -57,7 +57,14 @@ class Launcher:
         
         # Check and start MongoDB service first
         self.ensure_mongodb_service()
-        
+
+        # 启动 SSH 隧道（远程 ASR/TTS 端口映射）
+        try:
+            from core.ssh_tunnel import start_ssh_tunnel
+            start_ssh_tunnel()
+        except Exception as e:
+            logger.debug(f"SSH tunnel init failed: {e}")
+
         # Initialize MainWindow but don't show it yet
         self.main_window = MainWindow()
         
@@ -690,6 +697,13 @@ class Launcher:
         # 关闭 Live2D 进程和窗口
         self._stop_live2d_process()
 
+        # 关闭 SSH 隧道
+        try:
+            from core.ssh_tunnel import stop_ssh_tunnel
+            stop_ssh_tunnel()
+        except Exception:
+            pass
+
         # 关闭 MongoDB 进程（如果是由我们启动的）
         if self.mongodb_started_by_us:
             log.debug("正在关闭 MongoDB...")
@@ -745,7 +759,7 @@ class Launcher:
     def _stop_live2d_process(self):
         """停止 Live2D 进程和窗口"""
         log.debug("正在关闭 Live2D...")
-        
+
         if platform.system() != "Windows":
             # 非 Windows 系统，直接关闭主进程
             if self.live2d_process:
@@ -760,13 +774,13 @@ class Launcher:
                 except Exception as e:
                     log.debug(f"关闭 Live2D 时出错: {e}")
             return
-        
+
         # Windows 系统：优先通过窗口标题关闭（最可靠）
         try:
-            # 方法1：通过窗口标题关闭（GLFW 窗口标题是 "Live2D Pet"）
+            # 方法1：通过窗口标题关闭（扩展匹配模式）
             result = subprocess.run([
                 "powershell", "-NoProfile", "-Command",
-                "$processes = Get-Process | Where-Object {$_.MainWindowTitle -like '*Live2D*' -or $_.MainWindowTitle -like '*Pet*'}; if ($processes) { $processes | Stop-Process -Force; Write-Host '已通过窗口标题关闭 Live2D' } else { Write-Host '未找到 Live2D 窗口' }"
+                "$processes = Get-Process | Where-Object {$_.MainWindowTitle -like '*Live2D*' -or $_.MainWindowTitle -like '*Pet*' -or $_.MainWindowTitle -like '*live2d*' -or $_.MainWindowTitle -like '*L2D*'}; if ($processes) { $processes | Stop-Process -Force; Write-Host '已通过窗口标题关闭 Live2D' } else { Write-Host '未找到 Live2D 窗口' }"
             ], timeout=5, capture_output=True, text=True, encoding='utf-8', errors='ignore')
             if result.stdout and "已通过窗口标题关闭" in result.stdout:
                 log.debug(result.stdout.strip())
@@ -776,24 +790,24 @@ class Launcher:
                 log.debug("未找到 Live2D 窗口（可能已关闭）")
         except Exception as e:
             log.debug(f"通过窗口标题关闭时出错: {e}")
-        
-        # 方法2：如果记录了 Java 进程 PID，直接关闭
+
+        # 方法2：如果记录了 Java 进程 PID，使用 taskkill /T 杀掉进程树
         if self.live2d_java_pid:
             try:
                 subprocess.run(
-                    ["taskkill", "/F", "/PID", str(self.live2d_java_pid)],
+                    ["taskkill", "/F", "/T", "/PID", str(self.live2d_java_pid)],
                     capture_output=True,
                     timeout=5
                 )
-                log.debug(f"已关闭 Live2D Java 进程 (PID: {self.live2d_java_pid})")
+                log.debug(f"已关闭 Live2D Java 进程树 (PID: {self.live2d_java_pid})")
             except Exception as e:
                 log.debug(f"关闭 Java 进程时出错: {e}")
-        
-        # 方法3：查找并关闭所有相关的 Java 进程
+
+        # 方法3：查找并关闭所有相关的 Java 进程（扩展关键词匹配）
         try:
             project_root = Path(__file__).parent.parent.parent
             live2d_path = project_root / "src" / "frontend" / "live2d"
-            
+
             wmic_result = subprocess.run(
                 ["wmic", "process", "where", "name='java.exe'", "get", "ProcessId,CommandLine"],
                 capture_output=True,
@@ -802,32 +816,34 @@ class Launcher:
                 errors='ignore',
                 timeout=5
             )
-            
+
             java_pids = []
             if wmic_result.stdout:
                 for line in wmic_result.stdout.split('\n'):
-                    if 'Live2DPet' in line or 'live2d-pet' in line.lower() or 'exec:java' in line:
+                    # 扩展关键词匹配
+                    if any(kw in line for kw in ['Live2DPet', 'live2d-pet', 'live2d_pet', 'Live2D', 'exec:java', 'lwjgl', 'glfw']):
                         parts = line.split()
                         for part in parts:
                             if part.isdigit() and len(part) > 2:
                                 java_pids.append(part)
                                 break
-            
+
             if java_pids:
                 for pid in java_pids:
                     try:
+                        # 使用 taskkill /T 杀掉进程树
                         subprocess.run(
-                            ["taskkill", "/F", "/PID", pid],
+                            ["taskkill", "/F", "/T", "/PID", pid],
                             capture_output=True,
                             timeout=5
                         )
-                        log.debug(f"已关闭 Live2D Java 进程 (PID: {pid})")
+                        log.debug(f"已关闭 Live2D Java 进程树 (PID: {pid})")
                     except Exception:
                         logger.debug(f"Failed to kill Live2D Java process PID {pid}")
                         pass
         except Exception as e:
             log.debug(f"查找 Java 进程时出错: {e}")
-        
+
         # 方法4：关闭 Maven 进程（如果使用 Maven 启动）
         if self.live2d_process:
             try:
@@ -840,7 +856,7 @@ class Launcher:
                     log.debug("Live2D Maven 进程已强制关闭")
             except Exception as e:
                 log.debug(f"关闭 Maven 进程时出错: {e}")
-        
+
         log.debug("Live2D 关闭完成")
     
     def _stop_mongodb_process(self):
