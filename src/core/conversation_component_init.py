@@ -114,8 +114,37 @@ class ComponentInitMixin:
 
     # -- Init: ASR ----------------------------------------------------------
 
+    def _try_asr_websocket(self: "AsyncConversationManager", uri: str):
+        """Try to connect to a FunASR WebSocket server. Returns provider or None."""
+        try:
+            from backend.asr.providers import FunASRWebSocketProvider
+            ws_asr = FunASRWebSocketProvider(uri=uri)
+            if ws_asr.health_check(timeout=5.0):
+                return ws_asr
+            else:
+                log.warn(f"[conversation] ASR WebSocket health check failed: {uri}")
+                ws_asr.stop()
+                return None
+        except Exception as e:
+            log.warn(f"[conversation] ASR WebSocket init failed: {e}")
+            return None
+
+    def _try_asr_http(self: "AsyncConversationManager", url: str):
+        """Try to connect to a FunASR HTTP server. Returns provider or None."""
+        try:
+            from backend.asr.providers import FunASRRemoteProvider
+            remote = FunASRRemoteProvider(base_url=url)
+            if remote._client.health_check():
+                return remote
+            else:
+                log.warn(f"[conversation] ASR HTTP health check failed: {url}")
+                return None
+        except Exception as e:
+            log.warn(f"[conversation] ASR HTTP init failed: {e}")
+            return None
+
     def _init_asr(self: "AsyncConversationManager"):
-        """Initialise ASR: remote first (if configured), then local fallback."""
+        """Initialise ASR: smart fallback WS -> HTTP -> local."""
         if self._asr is not None:
             return
 
@@ -138,20 +167,24 @@ class ComponentInitMixin:
                 self._asr = None
             return
 
-        # 2. 远程 FunASR（优先）
+        # 2. 远程 FunASR: smart fallback WS -> HTTP -> local
         remote_url = getattr(self.config.asr, "remote_url", None)
         if remote_url:
-            try:
-                from backend.asr.providers import FunASRRemoteProvider
-                remote = FunASRRemoteProvider(base_url=remote_url)
-                if remote._client.health_check():
-                    self._asr = remote
-                    log.info(f"[conversation] ASR: remote ({remote_url})")
+            # Try WebSocket first (ws:// or wss://)
+            if remote_url.startswith("ws://") or remote_url.startswith("wss://"):
+                self._asr = self._try_asr_websocket(remote_url)
+                if self._asr:
+                    log.info(f"[conversation] ASR: WebSocket ({remote_url})")
                     return
-                else:
-                    log.warn(f"[conversation] ASR remote unavailable: {remote_url}, falling back to local")
-            except Exception as e:
-                log.warn(f"[conversation] ASR remote init failed: {e}, falling back to local")
+            # Try HTTP REST
+            elif remote_url.startswith("http://") or remote_url.startswith("https://"):
+                self._asr = self._try_asr_http(remote_url)
+                if self._asr:
+                    log.info(f"[conversation] ASR: HTTP ({remote_url})")
+                    return
+            # Unknown protocol, try both
+            else:
+                log.warn(f"[conversation] ASR: unknown protocol in remote_url: {remote_url}")
 
         # 3. 本地 FunASR（回退）
         self._init_asr_local()
@@ -283,6 +316,41 @@ class ComponentInitMixin:
                 log.warn(f"TTS cache init failed: {e}")
                 self._tts_cache = None
 
+    # -- Init: Singing (DiffSinger) ----------------------------------------
+
+    def _init_singing(self: "AsyncConversationManager"):
+        """Initialise singing engine (DiffSinger)."""
+        if self._singing is not None:
+            return
+
+        singing_cfg = self.config.singing
+        if not singing_cfg.enable:
+            log.debug("[conversation] Singing disabled in config")
+            return
+
+        if not singing_cfg.diffsinger_root:
+            log.debug("[conversation] Singing: diffsinger_root not configured")
+            return
+
+        try:
+            from backend.tts.engine.singing_engine import DiffSingerEngine
+
+            self._singing = DiffSingerEngine(
+                diffsinger_root=singing_cfg.diffsinger_root,
+                exp_name=singing_cfg.exp_name,
+                vocoder_ckpt=singing_cfg.vocoder_ckpt,
+                device=singing_cfg.device,
+                sample_rate=singing_cfg.sample_rate,
+            )
+
+            if self._singing.is_available():
+                log.info("[conversation] Singing engine (DiffSinger) ready")
+            else:
+                log.warn("[conversation] Singing engine init completed but not available")
+        except Exception as e:
+            log.warn(f"Singing engine init failed: {e}")
+            self._singing = None
+
     # -- Init: Agent --------------------------------------------------------
 
     def _init_agent(self: "AsyncConversationManager"):
@@ -299,6 +367,22 @@ class ComponentInitMixin:
         except Exception as e:
             log.error(f"Agent init failed: {e}")
             raise
+
+    # -- Init: SER (Speech Emotion Recognition) ----------------------------
+
+    def _init_ser(self: "AsyncConversationManager"):
+        """初始化语音情绪识别引擎"""
+        if not getattr(self.config, 'ser', None) or not self.config.ser.enable:
+            return
+        try:
+            from core.ser_engine import SEREngine
+            self._ser = SEREngine(
+                model_id=self.config.ser.model_id,
+                device=self.config.ser.device,
+            )
+            log.info("[conversation] SER engine initialized")
+        except Exception as e:
+            log.warning(f"[conversation] SER init failed: {e}")
 
     # -- Init: Diarization -------------------------------------------------
 
@@ -449,6 +533,8 @@ class ComponentInitMixin:
         log.debug("[conversation] Initialising async conversation system ...")
         self._init_audio()
         self._init_tts()
+        self._init_singing()
         self._init_agent()
+        self._init_ser()
         self._init_diarization()
         log.info("Async conversation system initialised")
