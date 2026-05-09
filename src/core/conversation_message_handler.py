@@ -283,15 +283,13 @@ class MessageHandlerMixin:
     def submit_user_text(self: "AsyncConversationManager", text: str):
         """Thread-safe: post user text into the conversation loop."""
         queue = self._user_text_queue
-        if queue is not None:
-            try:
-                loop = getattr(self, '_loop', None)
-                if loop:
-                    loop.call_soon_threadsafe(queue.put_nowait, text)
-                else:
-                    queue.put_nowait(text)
-            except Exception as e:
-                log.warning(f"Failed to submit user text: {e}")
+        if queue is None:
+            return
+        loop = getattr(self, '_loop', None)
+        if loop and loop.is_running():
+            loop.call_soon_threadsafe(queue.put_nowait, text)
+        else:
+            log.warning("[conversation] submit_user_text: no running loop, message dropped")
 
     # -- Streaming text helpers ---------------------------------------------
 
