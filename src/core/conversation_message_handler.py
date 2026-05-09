@@ -127,6 +127,9 @@ class MessageHandlerMixin:
 
     def _listen_with_asr(self: "AsyncConversationManager") -> Optional[str]:
         """Listen via ASR (synchronous, called from ``asyncio.to_thread``)."""
+        # 清空上一轮的声纹嵌入
+        self._last_speaker_embedding = None
+
         asr_type = type(self._asr).__name__
         log.info(f"Please speak ... [ASR: {asr_type}]")
 

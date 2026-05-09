@@ -425,6 +425,10 @@ class AsyncConversationManager(
             f"response time: {response_time_ms:.1f}ms"
         )
 
+        # 重置声纹注册状态
+        self._pending_registration = False
+        self._last_unknown_embedding = None
+
     def run_turn(self, user_text: str) -> None:
         """Start a new turn as an asyncio task."""
         self._current_turn = asyncio.create_task(self._handle_user_message(user_text))
