@@ -66,7 +66,10 @@ class Launcher:
             logger.debug(f"SSH tunnel init failed: {e}")
 
         # Initialize MainWindow but don't show it yet
-        self.main_window = MainWindow()
+        self.main_window = MainWindow(show_chat=self.enable_conversation)
+
+        # GUI 配置保存时触发热更新
+        self.main_window.config_saved.connect(self._on_gui_config_saved)
         
         # Setup System Tray
         self.setup_tray()
@@ -131,7 +134,55 @@ class Launcher:
             log.debug("自修复系统已启动")
         except Exception as e:
             log.error(f"自修复系统初始化失败: {e}")
-        
+
+    def _on_gui_config_saved(self, section: str):
+        """GUI 配置保存后的热更新回调"""
+        try:
+            cfg = get_config_manager()
+            cfg.reload_if_changed()  # 重新加载 settings.json
+
+            if not self._conversation_manager:
+                log.debug(f"[Launcher] GUI 配置已保存 ({section})，无对话管理器，跳过组件重载")
+                return
+
+            cm = self._conversation_manager
+            section = section.lower()
+
+            # 映射 section → reload 方法（用于回退路径）
+            reload_map = {
+                "asr": "reload_asr",
+                "tts": "reload_tts",
+                "audio": "reload_audio",
+                "singing": "reload_singing",
+                "interrupt": "reload_interrupt",
+                "general": "reload_general",
+                "models": "reload_models",
+                "services": "reload_singing",
+            }
+
+            # 通过标志调度 reload（线程安全）
+            if hasattr(cm, '_schedule_reload'):
+                cm._schedule_reload(section)
+                # 通知 event loop 醒来检查
+                loop = getattr(cm, '_loop', None) or getattr(cm, 'event_loop', None)
+                if loop and loop.is_running():
+                    # 唤醒主循环（它可能在等待 ASR）
+                    if hasattr(cm, '_asr_cancel'):
+                        cm._asr_cancel.set()
+                log.info(f"[Launcher] 热更新已调度: {section}")
+            else:
+                # 回退：直接调用（旧代码兼容）
+                method_name = reload_map.get(section)
+                if method_name and hasattr(cm, method_name):
+                    try:
+                        getattr(cm, method_name)()
+                    except Exception as e:
+                        log.warning(f"[Launcher] reload {section} failed: {e}")
+                else:
+                    log.debug(f"[Launcher] 配置段 '{section}' 无需组件重载")
+        except Exception as e:
+            log.error(f"[Launcher] GUI 配置热更新失败: {e}")
+
     def ensure_mongodb_service(self):
         """Check if MongoDB is running and start it if necessary."""
         log.debug("检查 MongoDB 状态...")
@@ -227,6 +278,7 @@ class Launcher:
     def _start_mongodb_process(self):
         """启动 MongoDB 进程"""
         # 不再硬编码本机路径：允许用户通过环境变量指定 mongod 与配置
+        self._mongod_pid = None
         mongod_exe_env = os.environ.get("MONGOD_EXE", "").strip()
         mongod_cfg_env = os.environ.get("MONGOD_CFG", "").strip()
         if not mongod_exe_env:
@@ -253,6 +305,19 @@ class Launcher:
             for _ in range(10):
                 time.sleep(1)
                 if self._is_mongodb_running():
+                    # Record the PID of the mongod process we started
+                    try:
+                        result = subprocess.run(
+                            ["tasklist", "/FI", "IMAGENAME eq mongod.exe", "/FO", "CSV", "/NH"],
+                            capture_output=True, text=True, encoding='utf-8', errors='ignore', timeout=5,
+                        )
+                        for line in result.stdout.strip().splitlines():
+                            parts = line.replace('"', '').split(',')
+                            if len(parts) >= 2 and 'mongod' in parts[0].lower():
+                                self._mongod_pid = int(parts[1])
+                                break
+                    except Exception:
+                        pass
                     log.debug("MongoDB 启动成功")
                     return True
             
@@ -340,11 +405,19 @@ class Launcher:
                 }
 
                 def on_subtitle(text, is_final, emotion="neutral"):
-                    """AI 字幕回调 → 通过 WebSocket 发送给 Live2D"""
+                    """AI 字幕回调 → WebSocket + GUI 聊天面板"""
+                    # 更新 GUI 聊天面板（通过信号，线程安全）
+                    if is_final and text and text.strip():
+                        try:
+                            self.main_window.chat_message_received.emit(
+                                "玲", text.strip(), "#a5d6a7"
+                            )
+                        except Exception:
+                            pass
+                    # 发送给 Live2D
                     try:
                         from core.message_server import send_message, send_motion
                         send_message(text, emotion=emotion, is_final=is_final)
-                        # 最终字幕时，根据情绪触发对应动作（仅非 neutral）
                         if is_final and emotion and emotion != "neutral":
                             motion = EMOTION_TO_MOTION.get(emotion)
                             if motion and motion != "Idle":
@@ -389,6 +462,12 @@ class Launcher:
                 
                 # 初始化对话管理器
                 self._conversation_manager.initialize()
+
+                # 连接 GUI 聊天输入到对话管理器（线程安全信号 → queue）
+                if self.text_only:
+                    self.main_window.chat_text_submitted.connect(
+                        self._conversation_manager.submit_user_text
+                    )
                 
                 # 创建新的事件循环并运行异步对话系统
                 loop = asyncio.new_event_loop()
@@ -470,6 +549,8 @@ class Launcher:
                 self._conversation_manager.stop_sync()
             elif hasattr(self._conversation_manager, 'stop'):
                 self._conversation_manager.stop()
+            if self._conversation_thread and self._conversation_thread.is_alive():
+                self._conversation_thread.join(timeout=10)
             self._conversation_manager = None
         
     def show_settings(self):
@@ -688,11 +769,11 @@ class Launcher:
             except Exception as e:
                 log.debug(f"停止自修复监控时出错: {e}")
 
-        # 先关闭消息服务
-        self._stop_message_server()
-
-        # 关闭对话系统
+        # 先关闭对话系统
         self.stop_conversation_system()
+
+        # 再关闭消息服务
+        self._stop_message_server()
 
         # 关闭 Live2D 进程和窗口
         self._stop_live2d_process()
@@ -780,7 +861,7 @@ class Launcher:
             # 方法1：通过窗口标题关闭（扩展匹配模式）
             result = subprocess.run([
                 "powershell", "-NoProfile", "-Command",
-                "$processes = Get-Process | Where-Object {$_.MainWindowTitle -like '*Live2D*' -or $_.MainWindowTitle -like '*Pet*' -or $_.MainWindowTitle -like '*live2d*' -or $_.MainWindowTitle -like '*L2D*'}; if ($processes) { $processes | Stop-Process -Force; Write-Host '已通过窗口标题关闭 Live2D' } else { Write-Host '未找到 Live2D 窗口' }"
+                "$processes = Get-Process | Where-Object {$_.MainWindowTitle -like '*Live2D*' -or $_.MainWindowTitle -like '*Pet*' -or $_.MainWindowTitle -like '*live2d*' -or $_.MainWindowTitle -like '*L2D*' -or $_.MainWindowTitle -like '*GLFW*' -or $_.MainWindowTitle -like '*glfw*'}; if ($processes) { $processes | Stop-Process -Force; Write-Host '已通过窗口标题关闭 Live2D' } else { Write-Host '未找到 Live2D 窗口' }"
             ], timeout=5, capture_output=True, text=True, encoding='utf-8', errors='ignore')
             if result.stdout and "已通过窗口标题关闭" in result.stdout:
                 log.debug(result.stdout.strip())
@@ -821,7 +902,7 @@ class Launcher:
             if wmic_result.stdout:
                 for line in wmic_result.stdout.split('\n'):
                     # 扩展关键词匹配
-                    if any(kw in line for kw in ['Live2DPet', 'live2d-pet', 'live2d_pet', 'Live2D', 'exec:java', 'lwjgl', 'glfw']):
+                    if any(kw in line for kw in ['Live2DPet', 'live2d-pet', 'live2d_pet', 'Live2D', 'live2d', 'exec:java', 'lwjgl', 'glfw']):
                         parts = line.split()
                         for part in parts:
                             if part.isdigit() and len(part) > 2:
@@ -873,12 +954,20 @@ class Launcher:
             )
             
             if "mongod.exe" in result.stdout:
-                # 使用 taskkill 关闭 MongoDB
-                subprocess.run(
-                    ["taskkill", "/F", "/IM", "mongod.exe"],
-                    capture_output=True,
-                    timeout=10
-                )
+                # 使用 PID 精确关闭我们启动的 MongoDB
+                if hasattr(self, '_mongod_pid') and self._mongod_pid:
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(self._mongod_pid)],
+                        capture_output=True,
+                        timeout=10,
+                    )
+                else:
+                    # fallback: 仅在无 PID 时使用 IM（可能误杀其他 mongod）
+                    subprocess.run(
+                        ["taskkill", "/F", "/IM", "mongod.exe"],
+                        capture_output=True,
+                        timeout=10,
+                    )
                 log.debug("MongoDB 已关闭")
             else:
                 log.debug("MongoDB 进程未找到")
