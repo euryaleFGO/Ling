@@ -192,8 +192,8 @@ class TTSPipelineMixin:
                             # Last resort: cancel the future and move on
                             try:
                                 fut.cancel()
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                log.debug(f"[tts] future cancel failed: {e}")
 
                 producer_thread = threading.Thread(target=_producer, daemon=True)
                 producer_thread.start()

@@ -683,8 +683,8 @@ class AsyncConversationManager(
             if hasattr(self, '_audio_output') and self._audio_output:
                 try:
                     self._audio_output.stop()
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.debug(f"[conversation] audio_output stop failed: {e}")
 
         log.info("Async conversation loop exited")
 
