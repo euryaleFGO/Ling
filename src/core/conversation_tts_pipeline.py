@@ -98,10 +98,12 @@ class TTSPipelineMixin:
         麦克风在 TTS 播报期间保持开启，用于用户打断（barge-in）检测。
         TTS 回声由 listen 循环开始时的 buffer flush 清除。
         """
+        producer_thread: threading.Thread | None = None
+
         while True:
             item = await pending.get()
             if item is None:
-                return
+                break
 
             try:
                 t_tts_start = time.monotonic()
@@ -316,6 +318,12 @@ class TTSPipelineMixin:
                 raise
             except Exception as exc:
                 log.error(f"TTS playback failed: {exc}")
+
+        # sentinel received, wait for producer
+        if producer_thread is not None and producer_thread.is_alive():
+            producer_thread.join(timeout=5.0)
+            if producer_thread.is_alive():
+                log.warning("[TTS] producer thread did not finish in 5s")
 
     # -- Audio visualisation ------------------------------------------------
 
