@@ -98,13 +98,24 @@ class MessageHandlerMixin:
         self: "AsyncConversationManager",
     ) -> Optional[str]:
         """Asynchronously listen and recognise user speech (or text)."""
+        # Non-blocking check on text queue (works in voice mode too, for GUI input)
         queue = self._user_text_queue
         if queue is not None:
+            try:
+                text = queue.get_nowait()
+                if text:
+                    return text
+            except asyncio.QueueEmpty:
+                pass
+
+        # If text-input mode, block-wait on queue
+        if getattr(self, '_text_input_enabled', False) and queue is not None:
             try:
                 return await asyncio.wait_for(queue.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 return None
 
+        # ASR path
         if self._asr:
             try:
                 return await asyncio.wait_for(

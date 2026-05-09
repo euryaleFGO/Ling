@@ -138,7 +138,9 @@ class AsyncConversationManager(
         self._tts_cache = None
 
         # Text-input queue (fed by tray / message_server)
-        self._user_text_queue: asyncio.Queue | None = None
+        # Always create the queue so GUI chat input works in voice mode too
+        self._user_text_queue: asyncio.Queue = asyncio.Queue()
+        self._text_input_enabled: bool = self.config.general.use_text_input
 
         # 热更新待执行标志（event loop 内调度，无线程竞争）
         self._reload_pending: dict[str, bool] = {}
@@ -633,10 +635,6 @@ class AsyncConversationManager(
         # 将事件循环引用传递给调度器，使其可以安全地调度 async 操作
         if hasattr(self, '_session_scheduler') and self._session_scheduler:
             self._session_scheduler.set_loop(self._loop)
-
-        if self.config.general.use_text_input:
-            self._user_text_queue = asyncio.Queue()
-            log.info("[text-input] Queue created, waiting for submissions ...")
 
         try:
             while self._running.is_set():
