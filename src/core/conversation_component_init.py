@@ -612,8 +612,8 @@ class ComponentInitMixin:
                 try:
                     if hasattr(self._singing, 'cleanup'):
                         self._singing.cleanup()
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.debug(f"[conversation] singing cleanup failed: {e}")
                 self._singing = None
 
             if singing_cfg.enable:
@@ -698,8 +698,8 @@ class ComponentInitMixin:
                         if hasattr(old, 'cleanup'):
                             try:
                                 old.cleanup()
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                log.debug(f"[conversation] {attr} cleanup failed: {e}")
                         setattr(self, attr, None)
                 self._init_diarization()
                 if self._diarization is not None:
