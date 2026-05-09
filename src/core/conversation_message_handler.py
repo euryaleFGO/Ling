@@ -10,6 +10,7 @@ streaming-text merging, and emotion-tag stripping.  Designed to be mixed into
 import asyncio
 import logging
 import re
+import threading
 import time
 from collections.abc import AsyncIterator
 from typing import Optional, TYPE_CHECKING
@@ -23,6 +24,11 @@ if TYPE_CHECKING:
     from core.conversation_manager_async import AsyncConversationManager
 
 logger = logging.getLogger(__name__)
+
+_EMOTION_PATTERN = re.compile(
+    r'\[(joy|anger|sadness|surprise|neutral|shy|think|fear|cry)\]',
+    re.IGNORECASE,
+)
 
 
 # ============================================================
@@ -49,10 +55,14 @@ class MessageHandlerMixin:
         queue: asyncio.Queue[str | None] = asyncio.Queue()
         exception_holder = [None]
         loop = asyncio.get_running_loop()
+        cancel_event = threading.Event()
 
         def _sync_generator():
             try:
                 for chunk in self._agent.chat(user_text, stream=True):
+                    if cancel_event.is_set():
+                        log.info("[Agent] streaming cancelled by interrupt")
+                        break
                     loop.call_soon_threadsafe(queue.put_nowait, chunk)
             except Exception as e:
                 log.error(f"Agent streaming error: {e}")
@@ -60,15 +70,27 @@ class MessageHandlerMixin:
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)
 
-        asyncio.create_task(asyncio.to_thread(_sync_generator))
+        task = asyncio.create_task(asyncio.to_thread(_sync_generator))
+        self._current_stream_task = task
 
-        while True:
-            chunk = await queue.get()
-            if chunk is None:
-                if exception_holder[0]:
-                    raise exception_holder[0]
-                break
-            yield chunk
+        try:
+            while True:
+                chunk = await queue.get()
+                if chunk is None:
+                    if exception_holder[0]:
+                        raise exception_holder[0]
+                    break
+                yield chunk
+        except asyncio.CancelledError:
+            cancel_event.set()
+            # 等待后台线程完成（最多 2 秒）
+            try:
+                await asyncio.wait_for(task, timeout=2.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+            raise
+        finally:
+            self._current_stream_task = None
 
     # -- ASR / input --------------------------------------------------------
 
@@ -76,11 +98,10 @@ class MessageHandlerMixin:
         self: "AsyncConversationManager",
     ) -> Optional[str]:
         """Asynchronously listen and recognise user speech (or text)."""
-        if self._user_text_queue is not None:
+        queue = self._user_text_queue
+        if queue is not None:
             try:
-                return await asyncio.wait_for(
-                    self._user_text_queue.get(), timeout=0.5
-                )
+                return await asyncio.wait_for(queue.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 return None
 
@@ -115,6 +136,9 @@ class MessageHandlerMixin:
 
         def on_chunk(chunk):
             nonlocal t_first_chunk, chunk_count
+            # 检查取消
+            if getattr(self, '_asr_cancel', None) and self._asr_cancel.is_set():
+                return
             chunk_count += 1
             if self._asr:
                 result = self._asr.feed_audio(chunk)
@@ -140,6 +164,7 @@ class MessageHandlerMixin:
             on_speech_start=on_speech_start,
             on_chunk=on_chunk,
             on_speech_end=on_speech_end,
+            cancel_event=getattr(self, '_asr_cancel', None),
         )
 
         full_audio = full_audio_ref[0]
@@ -211,6 +236,16 @@ class MessageHandlerMixin:
             except Exception as e:
                 log.debug(f"[ASR] speaker identification skipped: {e}")
 
+        # Extract speaker embedding for passive registration
+        if final and full_audio is not None and self._sv is not None:
+            try:
+                self._last_speaker_embedding = self._sv.embed(
+                    full_audio, sample_rate=self.config.audio.sample_rate
+                )
+            except Exception as e:
+                log.debug(f"[ASR] speaker embedding extraction failed: {e}")
+                self._last_speaker_embedding = None
+
         if final:
             log.debug(f"[ASR] final: '{final}'")
         return final or None
@@ -230,9 +265,11 @@ class MessageHandlerMixin:
         queue = self._user_text_queue
         if queue is not None:
             try:
-                queue.put_nowait(text)
-            except asyncio.QueueFull:
-                log.warning("User text queue full, dropping message")
+                loop = getattr(self, '_loop', None)
+                if loop:
+                    loop.call_soon_threadsafe(queue.put_nowait, text)
+                else:
+                    queue.put_nowait(text)
             except Exception as e:
                 log.warning(f"Failed to submit user text: {e}")
 
@@ -269,12 +306,8 @@ class MessageHandlerMixin:
     @staticmethod
     def _strip_emotion_tags(text: str) -> tuple[str, str | None]:
         """Remove ``[emotion]`` tags; return ``(clean_text, first_emotion)``."""
-        pattern = re.compile(
-            r'\[(joy|anger|sadness|surprise|neutral|shy|think|fear|cry)\]',
-            re.IGNORECASE,
-        )
-        emotions_found = pattern.findall(text)
+        emotions_found = _EMOTION_PATTERN.findall(text)
         first_tag = emotions_found[0].lower() if emotions_found else None
-        clean_text = pattern.sub("", text).strip()
+        clean_text = _EMOTION_PATTERN.sub("", text).strip()
         clean_text = re.sub(r'  +', ' ', clean_text)
         return clean_text, first_tag

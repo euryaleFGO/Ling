@@ -122,6 +122,9 @@ class AsyncConversationManager(
         # Barge-in interrupt detection (P0-2)
         self._interrupt_detected = threading.Event()
 
+        # ASR 可中断控制
+        self._asr_cancel = threading.Event()
+
         # Deduplication (Yione)
         self._last_submitted: dict[str, float] = {}
         self._dedup_window_ms: int = 2000

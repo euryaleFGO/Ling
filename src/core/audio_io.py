@@ -35,6 +35,11 @@ except ImportError:
 
 from core.vad import VADConfig, create_vad, VADBackend
 
+try:
+    from core.config_manager import InterruptConfig
+except ImportError:
+    InterruptConfig = None
+
 # 尝试导入音频库
 try:
     import sounddevice as sd
@@ -84,19 +89,33 @@ class AudioInput:
         self.config = config or AudioConfig()
         self._stream = None
         self._is_listening = False
+        self._running = threading.Event()
         self._audio_buffer = queue.Queue()
         self._callbacks = []
-        
+
         # VAD 状态
         self._is_speaking = False
         self._silence_start = None
         self._speech_buffer = []
-        
+
         # 构建 VADConfig 与后端
         self._vad_config = self._build_vad_config()
         self._vad: VADBackend = create_vad(self._vad_config)
         log.debug(f"[AudioIO] VAD 后端: {self._vad_config.backend}")
-    
+
+        # 打断检测状态（P0-2）
+        self._interrupt_active = threading.Event()
+        self._interrupt_vad: Optional[VADBackend] = None
+        self._interrupt_callback: Optional[Callable] = None
+        self._interrupt_speech_ms = 0
+        self._interrupt_min_speech_ms = 300
+        self._interrupt_speech_start: Optional[float] = None
+
+    def update_interrupt_config(self, min_speech_ms: int = None):
+        """Public API to update interrupt detection parameters (thread-safe)."""
+        if min_speech_ms is not None:
+            self._interrupt_min_speech_ms = min_speech_ms
+
     def _build_vad_config(self) -> VADConfig:
         """从 AudioConfig 构建 VADConfig"""
         if self.config.vad_config is not None:
@@ -120,10 +139,14 @@ class AudioInput:
         if not HAS_SOUNDDEVICE:
             raise RuntimeError("sounddevice 未安装")
         
+        # NOTE: _is_listening is read/written without a lock; this is a benign
+        # race because the worst case is a double-start that gets caught by the
+        # stream creation.  A full lock would add complexity for no real gain.
         if self._is_listening:
             return
-        
+
         self._is_listening = True
+        self._running.set()
         self._speech_buffer = []
         self._is_speaking = False
         self._silence_start = None
@@ -132,17 +155,20 @@ class AudioInput:
         def audio_callback(indata, frames, time_info, status):
             if status:
                 log.debug(f"[AudioIO] 状态: {status}")
-            
+
             # 复制数据避免覆盖，并展平为 1D
             audio_data = indata.copy().flatten()
-            
+
             # float32 录制，值域已经是 [-1, 1]，无需额外转换
-            
+
             # 放入缓冲区
             self._audio_buffer.put(audio_data)
-            
+
+            # 打断检测（P0-2）
+            self._process_interrupt_audio(audio_data)
+
             # 调用回调
-            for callback in self._callbacks:
+            for callback in list(self._callbacks):
                 try:
                     callback(audio_data)
                 except Exception as e:
@@ -161,6 +187,7 @@ class AudioInput:
     def stop_listening(self):
         """停止监听"""
         self._is_listening = False
+        self._running.clear()
         if self._stream:
             self._stream.stop()
             self._stream.close()
@@ -194,7 +221,9 @@ class AudioInput:
                 log.debug(f"[AudioIO] 状态: {status}")
             audio_data = indata.copy().flatten()
             self._audio_buffer.put(audio_data)
-            for cb in self._callbacks:
+            # 打断检测（P0-2）
+            self._process_interrupt_audio(audio_data)
+            for cb in list(self._callbacks):
                 try:
                     cb(audio_data)
                 except Exception as e:
@@ -210,6 +239,77 @@ class AudioInput:
         self._stream.start()
         log.debug("[AudioIO] mic resumed after TTS")
     
+    def start_interrupt_detection(
+        self,
+        on_interrupt: Callable,
+        config: "InterruptConfig" = None,
+    ):
+        """启动打断检测（TTS 播报期间）。
+
+        麦克风保持开启（不调用 pause_for_tts），使用独立 VAD 实例
+        检测用户语音活动。检测到持续语音超过阈值时触发 on_interrupt 回调。
+        """
+        if config is None:
+            from core.config_manager import get_config_manager
+            config = get_config_manager().config.interrupt
+
+        self._interrupt_active.set()
+        self._interrupt_callback = on_interrupt
+        self._interrupt_min_speech_ms = config.min_speech_ms
+        self._interrupt_speech_ms = 0
+        self._interrupt_speech_start = None
+
+        # 创建独立 VAD 实例（避免与主监听 VAD 冲突）
+        int_vad_cfg = VADConfig(
+            backend=self._vad_config.backend,
+            silence_duration=config.min_speech_ms / 1000.0,
+            min_speech_chunks=1,
+            hangover_chunks=1,
+            pre_buffer_chunks=0,
+            silence_threshold=self._vad_config.silence_threshold,
+        )
+        self._interrupt_vad = create_vad(int_vad_cfg)
+        log.debug(f"[AudioIO] interrupt detection started (min_speech={config.min_speech_ms}ms)")
+
+    def stop_interrupt_detection(self):
+        """停止打断检测"""
+        self._interrupt_active.clear()
+        self._interrupt_vad = None
+        self._interrupt_callback = None
+        self._interrupt_speech_start = None
+        self._interrupt_speech_ms = 0
+        log.debug("[AudioIO] interrupt detection stopped")
+
+    def _process_interrupt_audio(self, audio_data: np.ndarray):
+        """处理打断检测音频（在 audio_callback 中调用）"""
+        if not self._interrupt_active.is_set():
+            return
+        # Snapshot the vad reference to avoid race with stop_interrupt_detection()
+        vad = self._interrupt_vad
+        if vad is None:
+            return
+        try:
+            has_speech = vad.detect_speech(audio_data, self.config.sample_rate)
+            now = time.time()
+            if has_speech:
+                if self._interrupt_speech_start is None:
+                    self._interrupt_speech_start = now
+                    log.debug("[AudioIO] interrupt: speech detected, waiting for threshold...")
+                elapsed_ms = (now - self._interrupt_speech_start) * 1000
+                if elapsed_ms >= self._interrupt_min_speech_ms:
+                    log.info(f"[AudioIO] interrupt triggered! ({elapsed_ms:.0f}ms >= {self._interrupt_min_speech_ms}ms)")
+                    self._interrupt_active.clear()  # 防止重复触发
+                    if self._interrupt_callback:
+                        try:
+                            self._interrupt_callback()
+                        except Exception as e:
+                            log.error(f"[AudioIO] interrupt callback error: {e}")
+            else:
+                # 静音重置计时
+                self._interrupt_speech_start = None
+        except Exception as e:
+            log.debug(f"[AudioIO] interrupt processing error: {e}")
+
     def get_audio_chunk(self, timeout: float = 0.1) -> Optional[np.ndarray]:
         """获取一个音频块"""
         try:
@@ -240,6 +340,7 @@ class AudioInput:
         on_speech_start: Callable = None,
         on_speech_end: Callable[[np.ndarray], None] = None,
         on_chunk: Callable[[np.ndarray], None] = None,
+        cancel_event: threading.Event = None,
     ):
         """
         录音直到检测到静音
@@ -279,6 +380,12 @@ class AudioInput:
         pre_buffer = deque(maxlen=vc.pre_buffer_chunks)
         
         while self._is_listening:
+            # 检查外部取消
+            if cancel_event and cancel_event.is_set():
+                log.debug("[audio] recording cancelled by external event")
+                break
+            if not self._running:
+                break
             chunk = self.get_audio_chunk(timeout=0.5)
             if chunk is None:
                 continue
@@ -393,20 +500,24 @@ class AudioOutput:
         """播放音频数组"""
         if not HAS_SOUNDDEVICE:
             raise RuntimeError("sounddevice 未安装")
-        
+
         sr = sample_rate or self.sample_rate
         self._is_playing = True
-        
+
         if blocking:
-            sd.play(audio, sr)
-            sd.wait()
-            self._is_playing = False
-        else:
-            def play_thread():
+            try:
                 sd.play(audio, sr)
                 sd.wait()
+            finally:
                 self._is_playing = False
-            
+        else:
+            def play_thread():
+                try:
+                    sd.play(audio, sr)
+                    sd.wait()
+                finally:
+                    self._is_playing = False
+
             self._play_thread = threading.Thread(target=play_thread, daemon=True)
             self._play_thread.start()
     
@@ -441,11 +552,15 @@ class AudioOutput:
         
         # 填充队列
         def fill_queue():
-            for chunk in audio_generator:
-                if self._stop_flag.is_set():
-                    break
-                self._play_queue.put(chunk)
-            self._is_playing = False
+            try:
+                for chunk in audio_generator:
+                    if self._stop_flag.is_set():
+                        break
+                    self._play_queue.put(chunk)
+            except Exception as e:
+                logger.error(f"[AudioIO] fill_queue error: {e}")
+            finally:
+                self._is_playing = False
         
         fill_thread = threading.Thread(target=fill_queue, daemon=True)
         fill_thread.start()
@@ -463,6 +578,12 @@ class AudioOutput:
         self._stop_flag.set()
         sd.stop()
         self._is_playing = False
+        # Drain stale chunks so they don't play on the next call
+        while not self._play_queue.empty():
+            try:
+                self._play_queue.get_nowait()
+            except queue.Empty:
+                break
     
     def is_playing(self) -> bool:
         """是否正在播放"""
