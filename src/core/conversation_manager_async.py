@@ -785,6 +785,10 @@ class AsyncConversationManager(
         self._running.clear()
         self._user_text_queue = None
 
+        # 中断 ASR 录音
+        if hasattr(self, '_asr_cancel'):
+            self._asr_cancel.set()
+
         # 停止调度器
         if hasattr(self, '_session_scheduler') and self._session_scheduler:
             self._session_scheduler.stop()
