@@ -140,6 +140,9 @@ class AsyncConversationManager(
         # Text-input queue (fed by tray / message_server)
         self._user_text_queue: asyncio.Queue | None = None
 
+        # 热更新待执行标志（event loop 内调度，无线程竞争）
+        self._reload_pending: dict[str, bool] = {}
+
         # Running flag (threading.Event for cross-thread safety)
         self._running = threading.Event()
 
@@ -463,8 +466,39 @@ class AsyncConversationManager(
     #  Config hot-reload
     # ============================================================
 
+    def _schedule_reload(self, section: str):
+        """标记一个 section 需要 reload（线程安全，可从任意线程调用）"""
+        self._reload_pending[section] = True
+
+    async def _execute_pending_reloads(self):
+        """在主循环中执行待处理的 reload（event loop 单线程，无竞争）"""
+        if not self._reload_pending:
+            return
+        pending = dict(self._reload_pending)
+        self._reload_pending.clear()
+
+        reload_map = {
+            "asr": "reload_asr",
+            "tts": "reload_tts",
+            "audio": "reload_audio",
+            "singing": "reload_singing",
+            "interrupt": "reload_interrupt",
+            "general": "reload_general",
+            "models": "reload_models",
+        }
+        for section, should_reload in pending.items():
+            if not should_reload:
+                continue
+            method_name = reload_map.get(section.lower())
+            if method_name and hasattr(self, method_name):
+                log.info(f"[conversation] hot-reloading {section} ...")
+                try:
+                    await asyncio.to_thread(getattr(self, method_name))
+                except Exception as e:
+                    log.warning(f"[conversation] reload {section} failed: {e}")
+
     async def _hot_reload_components(self):
-        """Check for config changes and reload all components as needed."""
+        """检查配置文件更新，标记需要 reload 的组件"""
         try:
             cfg = get_config_manager()
             if not cfg.reload_if_changed():
@@ -492,14 +526,14 @@ class AsyncConversationManager(
                     old_asr_remote_url != self.config.asr.remote_url or
                     old_asr_device != self.config.asr.device or
                     old_asr_stream_profile != self.config.asr.stream_profile):
-                log.info("[热更新] ASR 配置变更，重新加载 ASR")
-                await asyncio.to_thread(self.reload_asr)
+                log.info("[热更新] ASR 配置变更，标记 reload")
+                self._schedule_reload("asr")
 
             # ---- TTS config ----
             if (old_tts_remote_url != self.config.tts.remote_url or
                     old_tts_spk_id != self.config.tts.spk_id):
-                log.info("[热更新] TTS 配置变更，重新加载 TTS")
-                await asyncio.to_thread(self.reload_tts)
+                log.info("[热更新] TTS 配置变更，标记 reload")
+                self._schedule_reload("tts")
 
             # ---- Audio config ----
             old_audio = self._old_config.get("audio", {})
@@ -511,8 +545,8 @@ class AsyncConversationManager(
                 "use_vad": self.config.audio.use_vad,
             }
             if old_audio != new_audio:
-                log.info("[热更新] audio 配置变更，更新音频设置")
-                await asyncio.to_thread(self.reload_audio)
+                log.info("[热更新] audio 配置变更，标记 reload")
+                self._schedule_reload("audio")
                 self._old_config["audio"] = new_audio
 
             # ---- Interrupt config ----
@@ -523,8 +557,8 @@ class AsyncConversationManager(
                 "vad_threshold": self.config.interrupt.vad_threshold,
             }
             if old_int != new_int:
-                log.info("[热更新] interrupt 配置变更，更新打断检测")
-                await asyncio.to_thread(self.reload_interrupt)
+                log.info("[热更新] interrupt 配置变更，标记 reload")
+                self._schedule_reload("interrupt")
                 self._old_config["interrupt"] = new_int
 
             # ---- Singing config ----
@@ -535,8 +569,8 @@ class AsyncConversationManager(
                 "diffsinger_root": getattr(self.config.singing, 'diffsinger_root', ''),
             }
             if old_singing != new_singing:
-                log.info("[热更新] singing 配置变更，更新歌声引擎")
-                await asyncio.to_thread(self.reload_singing)
+                log.info("[热更新] singing 配置变更，标记 reload")
+                self._schedule_reload("singing")
                 self._old_config["singing"] = new_singing
 
             # ---- General config ----
@@ -547,8 +581,8 @@ class AsyncConversationManager(
                 "ws_api_key": getattr(self.config.general, 'ws_api_key', ''),
             }
             if old_general != new_general:
-                log.info("[热更新] general 配置变更，更新通用设置")
-                await asyncio.to_thread(self.reload_general)
+                log.info("[热更新] general 配置变更，标记 reload")
+                self._schedule_reload("general")
                 self._old_config["general"] = new_general
 
             # ---- Model services config (punc, ser, sv, diarization) ----
@@ -561,12 +595,12 @@ class AsyncConversationManager(
                 "diar_threshold": getattr(self.config.diarization, 'threshold', 0.75),
             }
             if old_models != new_models:
-                log.info("[热更新] 模型服务配置变更，更新模型组件")
-                await asyncio.to_thread(self.reload_models)
+                log.info("[热更新] 模型服务配置变更，标记 reload")
+                self._schedule_reload("models")
                 self._old_config["models"] = new_models
 
         except Exception as e:
-            log.warning(f"[conversation] Hot reload check failed: {e}")
+            log.warning(f"[conversation] Config hot-reload check failed: {e}")
 
     # ============================================================
     #  Main loop
@@ -598,7 +632,13 @@ class AsyncConversationManager(
                 try:
                     await self._hot_reload_components()
                 except Exception as e:
-                    log.warn(f"[conversation] Config hot-reload failed: {e}")
+                    log.warning(f"[conversation] Config hot-reload failed: {e}")
+
+                # 执行待处理的 reload
+                try:
+                    await self._execute_pending_reloads()
+                except Exception as e:
+                    log.warning(f"[conversation] Pending reload failed: {e}")
 
                 # 检查 exit_app 工具是否请求了退出
                 if exit_signal.is_exit_requested():
