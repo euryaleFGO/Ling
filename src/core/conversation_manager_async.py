@@ -662,6 +662,23 @@ class AsyncConversationManager(
                     await asyncio.sleep(1)
         finally:
             self._running.clear()
+            # 中断 ASR
+            if hasattr(self, '_asr_cancel'):
+                self._asr_cancel.set()
+            # 取消当前轮次
+            if hasattr(self, '_current_turn') and self._current_turn and not self._current_turn.done():
+                self._current_turn.cancel()
+            # 停止调度器
+            if hasattr(self, '_session_scheduler') and self._session_scheduler:
+                try:
+                    self._session_scheduler.stop()
+                except Exception as e:
+                    log.debug(f"[conversation] session_scheduler stop failed: {e}")
+            if hasattr(self, '_dream_scheduler') and self._dream_scheduler:
+                try:
+                    self._dream_scheduler.stop()
+                except Exception as e:
+                    log.debug(f"[conversation] dream_scheduler stop failed: {e}")
             # 清理音频输入
             if self._audio_input and hasattr(self._audio_input, 'stop_listening'):
                 try:
