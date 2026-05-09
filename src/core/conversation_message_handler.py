@@ -107,7 +107,19 @@ class MessageHandlerMixin:
 
         if self._asr:
             try:
-                return await asyncio.to_thread(self._listen_with_asr)
+                return await asyncio.wait_for(
+                    asyncio.to_thread(self._listen_with_asr),
+                    timeout=120.0,
+                )
+            except asyncio.TimeoutError:
+                log.warning("[ASR] listen timeout (120s), forcing return")
+                if hasattr(self, '_asr_cancel'):
+                    self._asr_cancel.set()
+                return None
+            except asyncio.CancelledError:
+                if hasattr(self, '_asr_cancel'):
+                    self._asr_cancel.set()
+                raise
             except Exception as e:
                 log.warn(f"ASR recognition error: {e}")
                 return await asyncio.to_thread(self._listen_with_text)
