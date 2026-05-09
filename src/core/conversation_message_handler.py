@@ -160,6 +160,11 @@ class MessageHandlerMixin:
         self._asr.start_stream()
 
         log.debug(f"[ASR] stream started, supports_streaming={supports_streaming}")
+
+        # Reset cancel event for this recording session
+        if hasattr(self, '_asr_cancel'):
+            self._asr_cancel.clear()
+
         self._audio_input.record_until_silence(
             on_speech_start=on_speech_start,
             on_chunk=on_chunk,
