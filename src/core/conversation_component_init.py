@@ -9,12 +9,14 @@ Designed to be mixed into ``AsyncConversationManager`` via multiple inheritance.
 import asyncio
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 import numpy as np
 
 from core.log import log
+from core.config_manager import get_config_manager
 from core.audio_io import AudioInput, AudioOutput, AudioConfig
 from core.vad import VADConfig
 from core.tts_cache import TTSCache
@@ -556,46 +558,49 @@ class ComponentInitMixin:
     # -- Hot-reload helpers -------------------------------------------------
 
     def reload_asr(self: "AsyncConversationManager"):
-        """Reload ASR provider with current config."""
+        """热更新 ASR 组件"""
+        # 先中断正在进行的录音
+        if hasattr(self, '_asr_cancel'):
+            self._asr_cancel.set()
+        time.sleep(0.6)  # 等待 record_until_silence 退出循环
+        if hasattr(self, '_asr_cancel'):
+            self._asr_cancel.clear()
+
         if self._asr and hasattr(self._asr, 'stop'):
             try:
                 self._asr.stop()
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f"[conversation] old ASR stop failed: {e}")
         self._asr = None
         self._init_asr()
-        log.info("[conversation] ASR reloaded")
 
     def reload_tts(self: "AsyncConversationManager"):
-        """Reload TTS provider with current config."""
+        """热更新 TTS 组件"""
+        if hasattr(self, '_interrupt_detected'):
+            self._interrupt_detected.set()
+        time.sleep(0.2)
+
         if self._tts:
             try:
-                if hasattr(self._tts, 'cleanup'):
-                    self._tts.cleanup()
-            except Exception:
-                pass
+                self._tts.cleanup()
+            except Exception as e:
+                log.debug(f"[conversation] old TTS cleanup failed: {e}")
         self._tts = None
         self._tts_mode = None
         self._tts_cache = None
         self._init_tts()
-        log.info("[conversation] TTS reloaded")
 
     def reload_audio(self: "AsyncConversationManager"):
-        """Reload audio input/output settings with current config."""
-        try:
-            # AudioInput 内部读取 self.config，没有独立 setter，
-            # 因此通过重新创建对象来应用新配置。
-            if self._audio_input and hasattr(self._audio_input, 'stop_listening'):
-                try:
-                    self._audio_input.stop_listening()
-                except Exception:
-                    pass
-            self._audio_input = None
-            self._audio_output = None
-            self._init_audio()
-            log.info("[conversation] Audio devices reloaded")
-        except Exception as e:
-            log.warn(f"[conversation] Audio reload failed: {e}")
+        """热更新音频组件"""
+        old_input = self._audio_input
+        if old_input and hasattr(old_input, 'stop_listening'):
+            try:
+                old_input.stop_listening()
+            except Exception as e:
+                log.debug(f"[conversation] old audio_input stop failed: {e}")
+
+        # 创建新的（_init_audio 会设置 self._audio_input）
+        self._init_audio()
 
     def reload_singing(self: "AsyncConversationManager"):
         """Reload singing engine (DiffSinger) with current config."""
@@ -645,28 +650,24 @@ class ComponentInitMixin:
             log.warn(f"[conversation] Interrupt reload failed: {e}")
 
     def reload_general(self: "AsyncConversationManager"):
-        """Reload general settings (use_text_input, auto_listen, ws_api_key)."""
-        try:
-            general_cfg = self.config.general
+        """热更新通用配置"""
+        cfg = get_config_manager().config
+        new_text_input = cfg.general.use_text_input
 
-            # use_text_input 变更：创建或销毁文字输入队列
-            if general_cfg.use_text_input:
-                if self._user_text_queue is None:
-                    self._user_text_queue = asyncio.Queue()
-                    log.info("[conversation] General: text-input queue created")
-            else:
-                if self._user_text_queue is not None:
-                    self._user_text_queue = None
-                    log.info("[conversation] General: text-input queue removed")
-
-            # auto_listen 更新（如果存在对应属性）
-            if hasattr(self, '_auto_listen'):
-                self._auto_listen = general_cfg.auto_listen
-                log.info(f"[conversation] General: auto_listen={general_cfg.auto_listen}")
-
-            log.info("[conversation] General settings reloaded")
-        except Exception as e:
-            log.warn(f"[conversation] General reload failed: {e}")
+        if new_text_input:
+            if self._user_text_queue is None:
+                self._user_text_queue = asyncio.Queue()
+            self._text_input_enabled = True
+            log.info("[conversation] General: text-input enabled")
+        else:
+            self._text_input_enabled = False
+            if self._user_text_queue is not None:
+                while not self._user_text_queue.empty():
+                    try:
+                        self._user_text_queue.get_nowait()
+                    except Exception:
+                        break
+            log.info("[conversation] General: text-input disabled, using voice")
 
     def reload_models(self: "AsyncConversationManager"):
         """Reload model-dependent components (punc, ser, sv, diarization)."""
