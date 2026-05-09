@@ -116,51 +116,62 @@ class RemoteASRClient:
     def recognize_audio(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
         """
         识别音频（批量模式）
-        
+
         Args:
             audio: 音频数据（float32, mono）
             sample_rate: 采样率
-            
+
         Returns:
             识别文本
         """
-        try:
-            # 转换为 WAV 格式
-            wav_bytes = self._array_to_wav_bytes(audio, sample_rate)
-            
-            # Base64 编码
-            audio_b64 = base64.b64encode(wav_bytes).decode('utf-8')
-            
-            # 发送请求
-            resp = self._get_session().post(
-                f"{self.base_url}/asr/recognize",
-                json={
-                    "audio": audio_b64,
-                    "sample_rate": sample_rate,
-                    "language": self.config.language,
-                },
-                timeout=self.config.timeout
-            )
-            
-            if resp.status_code != 200:
-                log.error(f"[远程ASR] 请求失败: {resp.status_code} - {resp.text}")
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # 转换为 WAV 格式
+                wav_bytes = self._array_to_wav_bytes(audio, sample_rate)
+
+                # Base64 编码
+                audio_b64 = base64.b64encode(wav_bytes).decode('utf-8')
+
+                # 发送请求
+                resp = self._get_session().post(
+                    f"{self.base_url}/asr/recognize",
+                    json={
+                        "audio": audio_b64,
+                        "sample_rate": sample_rate,
+                        "language": self.config.language,
+                    },
+                    timeout=self.config.timeout
+                )
+
+                if resp.status_code != 200:
+                    log.error(f"[远程ASR] 请求失败: {resp.status_code} - {resp.text}")
+                    return ""
+
+                data = resp.json()
+                if data.get("status") != "success":
+                    log.error(f"[远程ASR] 识别失败: {data.get('error')}")
+                    return ""
+
+                text = data.get("text", "").strip()
+                log.debug(f"[远程ASR] 识别结果: {text}")
+                return text
+
+            except requests.Timeout:
+                log.error("[远程ASR] 请求超时")
+                return ""  # 超时不重试
+            except (requests.ConnectionError, requests.RequestException) as e:
+                if attempt < max_retries - 1:
+                    wait = 0.5 * (2 ** attempt)
+                    log.warn(f"[远程ASR] 网络错误，{wait}s 后重试 ({attempt+1}/{max_retries}): {e}")
+                    time.sleep(wait)
+                else:
+                    log.error(f"[远程ASR] 重试耗尽: {e}")
+                    return ""
+            except Exception as e:
+                log.error(f"[远程ASR] 错误: {e}")
                 return ""
-            
-            data = resp.json()
-            if data.get("status") != "success":
-                log.error(f"[远程ASR] 识别失败: {data.get('error')}")
-                return ""
-            
-            text = data.get("text", "").strip()
-            log.debug(f"[远程ASR] 识别结果: {text}")
-            return text
-            
-        except requests.Timeout:
-            log.error("[远程ASR] 请求超时")
-            return ""
-        except Exception as e:
-            log.error(f"[远程ASR] 错误: {e}")
-            return ""
+        return ""
     
     def start_stream(self) -> None:
         """开始流式识别"""

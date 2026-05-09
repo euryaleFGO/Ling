@@ -215,7 +215,8 @@ class MessageHandlerMixin:
             final = merged_stream
 
         # 离线兜底：流式结果差时用完整音频重新识别
-        if full_audio is not None and len(full_audio) > 0:
+        # batch provider 的 end_stream 已经做了完整识别，跳过重复调用
+        if supports_streaming and full_audio is not None and len(full_audio) > 0:
             duration_sec = len(full_audio) / max(1, self.config.audio.sample_rate)
             if not final or len(final) <= 2:
                 if duration_sec >= 0.35:

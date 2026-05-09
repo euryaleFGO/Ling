@@ -122,7 +122,12 @@ class ComponentInitMixin:
         try:
             from backend.asr.providers import FunASRWebSocketProvider
             verify_ssl = getattr(self.config.asr, "verify_ssl", True)
-            ws_asr = FunASRWebSocketProvider(uri=uri, verify_ssl=verify_ssl)
+            hotwords = " ".join(getattr(self.config.asr, "hotwords", []) or [])
+            hotword_weight = getattr(self.config.asr, "hotword_weight", 10.0)
+            ws_asr = FunASRWebSocketProvider(
+                uri=uri, verify_ssl=verify_ssl,
+                hotwords=hotwords, hotword_weight=hotword_weight,
+            )
             if ws_asr.health_check(timeout=5.0):
                 self._asr = ws_asr
                 return True

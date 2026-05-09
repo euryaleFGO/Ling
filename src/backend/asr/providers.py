@@ -134,18 +134,20 @@ class WhisperRemoteProvider(ASRProvider):
         api_base: str = "https://api.openai.com/v1",
         api_key: str = None,
         model: str = "whisper-1",
+        chunk_size: Optional[List[int]] = None,
     ):
         self.api_base = api_base.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self._chunk_size = chunk_size or [5, 10, 5]
         self._buffer: list = []
-    
+
     @property
     def supports_streaming(self) -> bool:
         return False
-    
+
     def get_chunk_stride(self) -> int:
-        return 5760  # 与 FunASR 兼容，便于共用录音逻辑
+        return self._chunk_size[1] * 960  # 与本地 FunASR 统一：10*960=9600 (600ms)
     
     def start_stream(self) -> None:
         self._buffer = []
@@ -157,16 +159,17 @@ class WhisperRemoteProvider(ASRProvider):
     
     def end_stream(self, chunk: Optional[np.ndarray] = None) -> str:
         if chunk is not None:
-            self._buffer.append(chunk)
+            self._buffer.append(chunk.copy())
         if not self._buffer:
             return ""
         full = np.concatenate(self._buffer)
         self._buffer = []
         return self.recognize_audio(full, 16000)
-    
+
     def recognize_audio(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
         import tempfile
         import wave
+        import time as _time
         import requests
 
         if audio.dtype == np.float32:
@@ -180,27 +183,33 @@ class WhisperRemoteProvider(ASRProvider):
                 wf.setsampwidth(2)
                 wf.setframerate(sample_rate)
                 wf.writeframes(audio.tobytes())
-            with open(tmp.name, "rb") as rf:
-                files = {"file": ("audio.wav", rf, "audio/wav")}
-                data = {"model": self.model}
-                headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+
+            max_retries = 3
+            for attempt in range(max_retries):
                 try:
-                    r = requests.post(
-                        f"{self.api_base}/audio/transcriptions",
-                        files=files,
-                        data=data,
-                        headers=headers,
-                        timeout=30,
-                    )
+                    with open(tmp.name, "rb") as rf:
+                        files = {"file": ("audio.wav", rf, "audio/wav")}
+                        data = {"model": self.model}
+                        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+                        r = requests.post(
+                            f"{self.api_base}/audio/transcriptions",
+                            files=files,
+                            data=data,
+                            headers=headers,
+                            timeout=30,
+                        )
+                    if r.status_code != 200:
+                        raise RuntimeError(f"Whisper API 错误: {r.status_code} {r.text}")
+                    return (r.json().get("text") or "").strip()
                 except requests.exceptions.Timeout:
                     raise RuntimeError("Whisper API 请求超时（30秒）")
-                except requests.exceptions.ConnectionError as e:
-                    raise RuntimeError(f"Whisper API 连接失败: {e}")
-                except requests.exceptions.RequestException as e:
-                    raise RuntimeError(f"Whisper API 请求异常: {e}")
-            if r.status_code != 200:
-                raise RuntimeError(f"Whisper API 错误: {r.status_code} {r.text}")
-            return (r.json().get("text") or "").strip()
+                except (requests.exceptions.ConnectionError, requests.exceptions.RequestException) as e:
+                    if attempt < max_retries - 1:
+                        wait = 0.5 * (2 ** attempt)
+                        _time.sleep(wait)
+                    else:
+                        raise RuntimeError(f"Whisper API 请求失败: {e}")
+            return ""
         finally:
             Path(tmp.name).unlink(missing_ok=True)
 
@@ -218,10 +227,12 @@ class FunASRRemoteProvider(ASRProvider):
         self,
         base_url: str = "http://localhost:5002",
         language: str = "zh",
+        chunk_size: Optional[List[int]] = None,
     ):
         from backend.asr.remote_client import RemoteASRClient, RemoteASRConfig
         config = RemoteASRConfig(base_url=base_url, language=language)
         self._client = RemoteASRClient(config)
+        self._chunk_size = chunk_size or [5, 10, 5]
         self._buffer: list = []
 
     @property
@@ -229,9 +240,10 @@ class FunASRRemoteProvider(ASRProvider):
         return False
 
     def get_chunk_stride(self) -> int:
-        return 5760  # 与 FunASR 兼容
+        return self._chunk_size[1] * 960  # 与本地 FunASR 统一：10*960=9600 (600ms)
 
     def start_stream(self) -> None:
+        # NOTE: caller must call start_stream to reclaim buffer memory on error paths
         self._buffer = []
 
     def feed_audio(self, chunk: np.ndarray) -> str:
@@ -241,7 +253,7 @@ class FunASRRemoteProvider(ASRProvider):
 
     def end_stream(self, chunk: Optional[np.ndarray] = None) -> str:
         if chunk is not None:
-            self._buffer.append(chunk)
+            self._buffer.append(chunk.copy())
         if not self._buffer:
             return ""
         full = np.concatenate(self._buffer)
@@ -250,6 +262,19 @@ class FunASRRemoteProvider(ASRProvider):
 
     def recognize_audio(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
         return self._client.recognize_audio(audio, sample_rate)
+
+    def health_check(self) -> bool:
+        """Check if remote ASR service is available"""
+        return self._client.health_check()
+
+    def stop(self):
+        """关闭远程连接（与 FunASRWebSocketProvider 接口统一）"""
+        self.close()
+
+    def close(self):
+        """Close the underlying HTTP session"""
+        if hasattr(self._client, 'close'):
+            self._client.close()
 
 
 class FunASRWebSocketProvider(ASRProvider):
@@ -266,6 +291,9 @@ class FunASRWebSocketProvider(ASRProvider):
         chunk_size: Optional[List[int]] = None,
         encoder_chunk_look_back: int = 4,
         decoder_chunk_look_back: int = 1,
+        verify_ssl: bool = True,
+        hotwords: str = "",
+        hotword_weight: float = 10.0,
     ):
         self.uri = uri
         self._chunk_size = chunk_size or [5, 10, 5]
@@ -274,6 +302,9 @@ class FunASRWebSocketProvider(ASRProvider):
         self._client = _FunASRWSClient(
             uri, self._chunk_size,
             self._enc_look_back, self._dec_look_back,
+            verify_ssl=verify_ssl,
+            hotwords=hotwords,
+            hotword_weight=hotword_weight,
         )
         self._client.start()
 
@@ -282,9 +313,9 @@ class FunASRWebSocketProvider(ASRProvider):
         return True
 
     def get_chunk_stride(self) -> int:
-        # chunk_size[1] * 60 = 10 * 60 = 600 samples = 600/16000 = 37.5ms per stride
-        # FunASR 2-pass: chunk_size = [5, 10, 5], stride = 600 samples
-        return self._chunk_size[1] * 60
+        # chunk_size[1] * 960 = 10 * 960 = 9600 samples = 600ms per stride
+        # FunASR 2-pass: chunk_size = [5, 10, 5], stride = 9600 samples (600ms)
+        return self._chunk_size[1] * 960
 
     def start_stream(self) -> None:
         self._client.start_stream()
@@ -320,18 +351,23 @@ class FunASRWebSocketProvider(ASRProvider):
 
     def stop(self):
         """关闭 WebSocket 连接"""
-        if self._client:
-            self._client.stop()
+        if self._client is None:
+            return
+        self._client.stop()
+        self._client = None
 
 
 class _FunASRWSClient:
     """FunASR WebSocket 底层客户端（后台线程运行事件循环）"""
 
-    def __init__(self, uri, chunk_size, enc_look_back, dec_look_back):
+    def __init__(self, uri, chunk_size, enc_look_back, dec_look_back, verify_ssl=True, hotwords="", hotword_weight=10.0):
         self.uri = uri
         self._chunk_size = chunk_size
         self._enc_look_back = enc_look_back
         self._dec_look_back = dec_look_back
+        self._verify_ssl = verify_ssl
+        self._hotwords = hotwords
+        self._hotword_weight = hotword_weight
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
@@ -399,12 +435,13 @@ class _FunASRWSClient:
         import ssl as _ssl
         self._log.info(f"[ASR-WS] 连接: {self.uri}")
 
-        # wss:// 自签名证书兼容
+        # wss:// SSL 上下文
         ssl_ctx = None
         if self.uri.startswith("wss://"):
             ssl_ctx = _ssl.create_default_context()
-            ssl_ctx.check_hostname = False
-            ssl_ctx.verify_mode = _ssl.CERT_NONE
+            if not self._verify_ssl:
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = _ssl.CERT_NONE
 
         async with websockets.connect(
             self.uri, max_size=2**22,
@@ -428,7 +465,7 @@ class _FunASRWSClient:
                 "wav_format": "pcm",
                 "audio_fs": 16000,
                 "itn": True,
-                "hotwords": "",
+                "hotwords": self._hotwords,
             }
             await ws.send(json.dumps(config))
 
@@ -451,6 +488,11 @@ class _FunASRWSClient:
                                 self._result_queue.put(text)
                     except json.JSONDecodeError:
                         pass
+
+        # async with 退出意味着连接已关闭（可能是优雅断开），
+        # 必须清除 _connected 标志，否则 feed_audio 会向死 socket 发送数据
+        self._connected = False
+        self._ws = None
 
     def start_stream(self):
         """开始新一轮识别"""
@@ -481,6 +523,7 @@ class _FunASRWSClient:
             ).result(timeout=2)
         except Exception as e:
             self._log.debug(f"[ASR-WS] 发送失败: {e}")
+            return ""
         return text or self._last_text
 
     def end_stream(self, chunk: Optional[np.ndarray] = None) -> str:
@@ -505,6 +548,8 @@ class _FunASRWSClient:
         try:
             final_text = self._result_queue.get(timeout=10)
         except queue.Empty:
+            if not self._connected:
+                return self._last_text
             final_text = self._last_text
 
         return final_text
