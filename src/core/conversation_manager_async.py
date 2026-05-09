@@ -143,6 +143,9 @@ class AsyncConversationManager(
         # 热更新待执行标志（event loop 内调度，无线程竞争）
         self._reload_pending: dict[str, bool] = {}
 
+        # Event loop reference (set in run_async, init to None for safe access)
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
         # Running flag (threading.Event for cross-thread safety)
         self._running = threading.Event()
 
@@ -170,6 +173,11 @@ class AsyncConversationManager(
         self._on_viseme = on_viseme
         self._on_exit_requested = on_exit_requested
         self._on_speaker_change_callback = on_speaker_change
+
+    @property
+    def event_loop(self) -> Optional[asyncio.AbstractEventLoop]:
+        """公共接口：获取 event loop 引用"""
+        return getattr(self, '_loop', None)
 
     # ============================================================
     #  State management
