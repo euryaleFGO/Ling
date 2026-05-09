@@ -87,6 +87,13 @@ def _get_logger(name: str, level=logging.DEBUG) -> logging.Logger:
 
 # 各模块 logger
 _logger_general = _get_logger("agent")
+
+# _logger_general 的控制台 handler 提升到 INFO（供 _Logger 类方法使用）
+for _h in _logger_general.handlers:
+    if isinstance(_h, logging.StreamHandler) and not isinstance(_h, RotatingFileHandler):
+        _h.setLevel(logging.INFO)
+        break
+
 _logger_tts = _get_logger("tts")
 _logger_tts_segment = _get_logger("tts_segment")
 _logger_asr = _get_logger("asr")
@@ -99,26 +106,26 @@ class _Logger:
     @staticmethod
     def info(msg: str):
         """关键信息，始终显示"""
-        print(msg)
         _logger_general.info(msg)
 
     @staticmethod
     def debug(msg: str):
         """调试信息，仅 --debug 时显示"""
-        if _debug_mode:
-            print(msg)
         _logger_general.debug(msg)
 
     @staticmethod
     def warn(msg: str):
         """警告，始终显示"""
-        print(f"⚠ {msg}")
         _logger_general.warning(msg)
+
+    @staticmethod
+    def warning(msg: str):
+        """Alias for warn() -- standard logging compatibility."""
+        _Logger.warn(msg)
 
     @staticmethod
     def error(msg: str):
         """错误，始终显示"""
-        print(f"✖ {msg}")
         _logger_general.error(msg)
 
     # ---- TTS 专用日志（全部写入文件）----
