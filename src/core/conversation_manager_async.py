@@ -20,6 +20,8 @@ import time
 import threading
 from typing import Optional, Callable
 
+import numpy as np
+
 from core.log import log
 from core.config_manager import SystemConfig, get_config_manager
 from core.emotion_classifier import EmotionClassifier
@@ -38,6 +40,7 @@ from core.conversation_tts_pipeline import (
     PendingItem,
 )
 from core.conversation_message_handler import MessageHandlerMixin
+from core.conversation_speaker import SpeakerRecognitionMixin
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +53,7 @@ class AsyncConversationManager(
     ComponentInitMixin,
     TTSPipelineMixin,
     MessageHandlerMixin,
+    SpeakerRecognitionMixin,
 ):
     """
     Asynchronous conversation manager (Yione-inspired architecture).
@@ -98,10 +102,16 @@ class AsyncConversationManager(
 
         # Multi-speaker diarization
         self._diarization = None
-        self._current_user_id: str = self.config.general.user_id
+        self._user_id: str = self.config.general.user_id
+        self._current_user_id: str = self._user_id
         self._on_speaker_change_callback: Optional[Callable] = None
         self._speaker_manager = None
         self._voiceprint_db = None
+
+        # Passive speaker registration state
+        self._pending_registration = False
+        self._last_unknown_embedding = None
+        self._last_speaker_embedding = None
 
         # Turn management (Yione)
         self._current_turn: asyncio.Task | None = None
@@ -110,7 +120,7 @@ class AsyncConversationManager(
         self._interrupt_count: int = 0
 
         # Barge-in interrupt detection (P0-2)
-        self._interrupt_detected: bool = False
+        self._interrupt_detected = threading.Event()
 
         # Deduplication (Yione)
         self._last_submitted: dict[str, float] = {}
@@ -262,7 +272,7 @@ class AsyncConversationManager(
 
             # 启动打断检测（P0-2）
             if self.config.interrupt.enable_barge_in and self._audio_input:
-                self._interrupt_detected = False
+                self._interrupt_detected.clear()
                 self._audio_input.start_interrupt_detection(
                     on_interrupt=self._on_barge_in_detected,
                     config=self.config.interrupt,
@@ -305,8 +315,8 @@ class AsyncConversationManager(
             try:
                 import sounddevice as sd
                 sd.stop()
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f"[conversation] sd.stop() failed: {e}")
             # 停止打断检测
             if self._audio_input:
                 self._audio_input.stop_interrupt_detection()
@@ -333,7 +343,7 @@ class AsyncConversationManager(
 
             self._drain_queue(pending)
             worker.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
+            with contextlib.suppress(asyncio.CancelledError):
                 await worker
             with contextlib.suppress(Exception):
                 self._set_state(ConversationState.IDLE)
@@ -347,15 +357,15 @@ class AsyncConversationManager(
             try:
                 import sounddevice as sd
                 sd.stop()
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f"[conversation] sd.stop() failed: {e}")
             # 异常时也丢弃暂存退出，确保麦克风恢复
             exit_signal.consume_pending_exit()
             if self._audio_input:
                 await asyncio.to_thread(self._audio_input.resume_after_tts)
             self._drain_queue(pending)
             worker.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
+            with contextlib.suppress(asyncio.CancelledError):
                 await worker
             with contextlib.suppress(Exception):
                 self._set_state(ConversationState.IDLE)
@@ -416,15 +426,14 @@ class AsyncConversationManager(
     def _on_barge_in_detected(self) -> None:
         """打断检测回调：设置标志并取消当前 turn。"""
         log.info("[barge-in] User speech detected during TTS, interrupting")
-        self._interrupt_detected = True
+        self._interrupt_detected.set()
         if self._current_turn and not self._current_turn.done():
             # 在事件循环中取消当前 turn
             try:
-                loop = self._current_turn.get_loop()
+                loop = getattr(self, '_loop', None) or self._current_turn.get_loop()
                 loop.call_soon_threadsafe(self._current_turn.cancel)
-            except Exception:
-                # fallback: 直接设置标志，TTS worker 会在下一个 chunk 检查
-                pass
+            except Exception as e:
+                log.debug(f"[barge-in] cancel failed: {e}")
 
     # ============================================================
     #  Deduplication
@@ -451,30 +460,110 @@ class AsyncConversationManager(
     #  Config hot-reload
     # ============================================================
 
-    def _hot_reload_components(self):
-        """Check for config changes and reload ASR/TTS if needed."""
-        from core.config_manager import get_config_manager
-        cm = get_config_manager()
-        if not cm.check_for_updates():
-            return
+    async def _hot_reload_components(self):
+        """Check for config changes and reload all components as needed."""
+        try:
+            cfg = get_config_manager()
+            if not cfg.reload_if_changed():
+                return
 
-        log.info("[conversation] Config file changed, reloading components ...")
-        old_asr_provider = self.config.asr.provider
-        old_asr_remote = self.config.asr.remote_url
-        old_tts_remote = self.config.tts.remote_url
+            log.info("[conversation] Config changed, checking components ...")
 
-        cm.reload_if_changed()
+            # Initialize _old_config on first call
+            if not hasattr(self, '_old_config'):
+                self._old_config = {}
 
-        # Check if ASR config changed
-        if (self.config.asr.provider != old_asr_provider or
-                self.config.asr.remote_url != old_asr_remote):
-            log.info("[conversation] ASR config changed, reloading ...")
-            self.reload_asr()
+            # Capture old values before updating (I-7: stale reference fix)
+            old_asr_provider = self.config.asr.provider
+            old_asr_remote_url = self.config.asr.remote_url
+            old_asr_device = self.config.asr.device
+            old_asr_stream_profile = self.config.asr.stream_profile
+            old_tts_remote_url = self.config.tts.remote_url
+            old_tts_spk_id = self.config.tts.spk_id
 
-        # Check if TTS config changed
-        if self.config.tts.remote_url != old_tts_remote:
-            log.info("[conversation] TTS config changed, reloading ...")
-            self.reload_tts()
+            # Update to new config
+            self.config = cfg.config
+
+            # ---- ASR config ----
+            if (old_asr_provider != self.config.asr.provider or
+                    old_asr_remote_url != self.config.asr.remote_url or
+                    old_asr_device != self.config.asr.device or
+                    old_asr_stream_profile != self.config.asr.stream_profile):
+                log.info("[热更新] ASR 配置变更，重新加载 ASR")
+                await asyncio.to_thread(self.reload_asr)
+
+            # ---- TTS config ----
+            if (old_tts_remote_url != self.config.tts.remote_url or
+                    old_tts_spk_id != self.config.tts.spk_id):
+                log.info("[热更新] TTS 配置变更，重新加载 TTS")
+                await asyncio.to_thread(self.reload_tts)
+
+            # ---- Audio config ----
+            old_audio = self._old_config.get("audio", {})
+            new_audio = {
+                "sample_rate": self.config.audio.sample_rate,
+                "silence_threshold": self.config.audio.silence_threshold,
+                "silence_duration": self.config.audio.silence_duration,
+                "vad_backend": self.config.audio.vad_backend,
+                "use_vad": self.config.audio.use_vad,
+            }
+            if old_audio != new_audio:
+                log.info("[热更新] audio 配置变更，更新音频设置")
+                await asyncio.to_thread(self.reload_audio)
+                self._old_config["audio"] = new_audio
+
+            # ---- Interrupt config ----
+            old_int = self._old_config.get("interrupt", {})
+            new_int = {
+                "enable_barge_in": self.config.interrupt.enable_barge_in,
+                "min_speech_ms": self.config.interrupt.min_speech_ms,
+                "vad_threshold": self.config.interrupt.vad_threshold,
+            }
+            if old_int != new_int:
+                log.info("[热更新] interrupt 配置变更，更新打断检测")
+                await asyncio.to_thread(self.reload_interrupt)
+                self._old_config["interrupt"] = new_int
+
+            # ---- Singing config ----
+            old_singing = self._old_config.get("singing", {})
+            new_singing = {
+                "enable": getattr(self.config.singing, 'enable', False),
+                "device": getattr(self.config.singing, 'device', 'cuda'),
+                "diffsinger_root": getattr(self.config.singing, 'diffsinger_root', ''),
+            }
+            if old_singing != new_singing:
+                log.info("[热更新] singing 配置变更，更新歌声引擎")
+                await asyncio.to_thread(self.reload_singing)
+                self._old_config["singing"] = new_singing
+
+            # ---- General config ----
+            old_general = self._old_config.get("general", {})
+            new_general = {
+                "use_text_input": getattr(self.config.general, 'use_text_input', False),
+                "auto_listen": getattr(self.config.general, 'auto_listen', True),
+                "ws_api_key": getattr(self.config.general, 'ws_api_key', ''),
+            }
+            if old_general != new_general:
+                log.info("[热更新] general 配置变更，更新通用设置")
+                await asyncio.to_thread(self.reload_general)
+                self._old_config["general"] = new_general
+
+            # ---- Model services config (punc, ser, sv, diarization) ----
+            old_models = self._old_config.get("models", {})
+            new_models = {
+                "punc_enable": getattr(self.config.punc, 'enable', True),
+                "ser_enable": getattr(self.config.ser, 'enable', True),
+                "sv_enable": getattr(self.config.sv, 'enable', False),
+                "diar_enable": getattr(self.config.diarization, 'enable', False),
+                "diar_threshold": getattr(self.config.diarization, 'threshold', 0.75),
+            }
+            if old_models != new_models:
+                log.info("[热更新] 模型服务配置变更，更新模型组件")
+                await asyncio.to_thread(self.reload_models)
+                self._old_config["models"] = new_models
+
+        except Exception as e:
+            log.warning(f"[conversation] Hot reload check failed: {e}")
 
     # ============================================================
     #  Main loop
@@ -484,6 +573,17 @@ class AsyncConversationManager(
         """Async main conversation loop."""
         log.info("\nAsync conversation system started\n")
         self._running.set()
+        self._loop = asyncio.get_running_loop()
+
+        # 启动会话轮转调度器（每天凌晨 4 点新开会话）
+        self._start_session_scheduler()
+
+        # 启动梦境整合调度器（每天凌晨 4:30 执行记忆整合）
+        self._start_dream_scheduler()
+
+        # 将事件循环引用传递给调度器，使其可以安全地调度 async 操作
+        if hasattr(self, '_session_scheduler') and self._session_scheduler:
+            self._session_scheduler.set_loop(self._loop)
 
         if self.config.general.use_text_input:
             self._user_text_queue = asyncio.Queue()
@@ -493,7 +593,7 @@ class AsyncConversationManager(
             while self._running.is_set():
                 # 检查配置文件更新
                 try:
-                    self._hot_reload_components()
+                    await self._hot_reload_components()
                 except Exception as e:
                     log.warn(f"[conversation] Config hot-reload failed: {e}")
 
@@ -513,6 +613,25 @@ class AsyncConversationManager(
                     if user_text.lower() in ['quit', 'exit', '退出', '结束']:
                         log.debug("Exit command received")
                         break
+
+                    # Passive speaker registration (only when we have a real embedding)
+                    if self._last_speaker_embedding is not None:
+                        speaker_id = self._identify_speaker_from_embedding(
+                            self._last_speaker_embedding
+                        )
+                        effective_text, should_continue, prompt_to_speak = (
+                            self._handle_passive_registration(
+                                user_text, speaker_id,
+                                self._last_speaker_embedding,
+                            )
+                        )
+                        if prompt_to_speak:
+                            await asyncio.to_thread(self._speak_text_sync, prompt_to_speak)
+                            self._send_subtitle(prompt_to_speak, is_final=True)
+                        if not should_continue:
+                            continue
+                        if effective_text:
+                            user_text = effective_text
 
                     if not self._should_submit(user_text):
                         continue
@@ -540,6 +659,12 @@ class AsyncConversationManager(
                     await asyncio.sleep(1)
         finally:
             self._running.clear()
+            # 清理音频输入
+            if self._audio_input and hasattr(self._audio_input, 'stop_listening'):
+                try:
+                    self._audio_input.stop_listening()
+                except Exception as e:
+                    log.debug(f"[conversation] audio_input.stop_listening() failed: {e}")
             # 退出时关闭会话，生成摘要
             if self._agent:
                 try:
@@ -547,7 +672,40 @@ class AsyncConversationManager(
                 except Exception as e:
                     log.error(f"[conversation] 退出时关闭会话失败: {e}")
 
+            # 清理 TTS/ASR/音频资源
+            for attr in ('_tts', '_asr', '_singing'):
+                obj = getattr(self, attr, None)
+                if obj and hasattr(obj, 'stop'):
+                    try:
+                        obj.stop()
+                    except Exception as e:
+                        log.debug(f"[conversation] {attr}.stop() failed: {e}")
+            if hasattr(self, '_audio_output') and self._audio_output:
+                try:
+                    self._audio_output.stop()
+                except Exception:
+                    pass
+
         log.info("Async conversation loop exited")
+
+    # ============================================================
+    #  Simple TTS speak (for prompts, registration, etc.)
+    # ============================================================
+
+    def _speak_text_sync(self, text: str):
+        """Synchronously speak a short text via TTS (blocking)."""
+        if not self._tts or not self._audio_output:
+            return
+        try:
+            sr = getattr(self._tts, 'sample_rate', self.config.audio.sample_rate)
+            for chunk_data in self._tts.generate_audio_streaming(text, use_clone=True):
+                if chunk_data is None:
+                    break
+                audio = getattr(chunk_data, 'audio', chunk_data)
+                if audio is not None:
+                    self._audio_output.play_array(audio, sr, blocking=True)
+        except Exception as e:
+            log.warning(f"[tts] speak prompt failed: {e}")
 
     # ============================================================
     #  Performance monitoring
@@ -569,12 +727,6 @@ class AsyncConversationManager(
     def start(self, blocking: bool = True):
         """Start the conversation loop."""
         self.initialize()
-
-        # 启动会话轮转调度器（每天凌晨 4 点新开会话）
-        self._start_session_scheduler()
-
-        # 启动梦境整合调度器（每天凌晨 4:30 执行记忆整合）
-        self._start_dream_scheduler()
 
         if blocking:
             asyncio.run(self.run_async())
@@ -603,7 +755,7 @@ class AsyncConversationManager(
         """启动梦境整合调度器"""
         try:
             from backend.llm.memory.dream_scheduler import start_dream_scheduler
-            user_id = self.config.general.user_id
+            user_id = self._user_id
             self._dream_scheduler = start_dream_scheduler(
                 user_id=user_id,
                 schedule_time="04:30",
@@ -659,8 +811,8 @@ def start_async_conversation(
 ) -> AsyncConversationManager:
     """Quick-start helper for async conversation."""
     cfg = get_config_manager().config
-    cfg.general.user_id = user_id
     manager = AsyncConversationManager(cfg)
+    manager._user_id = user_id
     manager.start(blocking=blocking)
     return manager
 

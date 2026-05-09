@@ -6,6 +6,7 @@ Encapsulates the lazy init logic for ASR, TTS, LLM Agent, and audio devices.
 Designed to be mixed into ``AsyncConversationManager`` via multiple inheritance.
 """
 
+import asyncio
 import logging
 import re
 from pathlib import Path
@@ -91,7 +92,7 @@ class ComponentInitMixin:
 
         if req.startswith("cuda"):
             if not _cuda_available():
-                log.warn(f"ASR device '{requested}' unavailable, falling back to cpu")
+                log.info(f"ASR device '{requested}' unavailable, falling back to cpu")
                 return "cpu"
             m = re.fullmatch(r"cuda:(\d+)", req)
             if m:
@@ -100,48 +101,54 @@ class ComponentInitMixin:
                 if 0 <= idx < max(1, count):
                     return req
                 fallback = "cuda:0" if count > 0 else "cpu"
-                log.warn(
+                log.info(
                     f"ASR device '{requested}' out of range (GPU count={count}), "
                     f"falling back to {fallback}"
                 )
                 return fallback
             if req == "cuda":
                 return "cuda:0"
-            log.warn(f"ASR device '{requested}' unavailable, falling back to cpu")
+            log.info(f"ASR device '{requested}' unavailable, falling back to cpu")
             return "cpu"
 
         return "cpu"
 
     # -- Init: ASR ----------------------------------------------------------
 
-    def _try_asr_websocket(self: "AsyncConversationManager", uri: str):
-        """Try to connect to a FunASR WebSocket server. Returns provider or None."""
+    def _try_asr_websocket(self: "AsyncConversationManager", uri: str) -> bool:
+        """Try to connect to a FunASR WebSocket server. Sets self._asr on success."""
         try:
             from backend.asr.providers import FunASRWebSocketProvider
-            ws_asr = FunASRWebSocketProvider(uri=uri)
+            verify_ssl = getattr(self.config.asr, "verify_ssl", True)
+            ws_asr = FunASRWebSocketProvider(uri=uri, verify_ssl=verify_ssl)
             if ws_asr.health_check(timeout=5.0):
-                return ws_asr
+                self._asr = ws_asr
+                return True
             else:
-                log.warn(f"[conversation] ASR WebSocket health check failed: {uri}")
+                log.info(f"[conversation] ASR WebSocket health check failed: {uri}")
                 ws_asr.stop()
-                return None
+                return False
         except Exception as e:
             log.warn(f"[conversation] ASR WebSocket init failed: {e}")
-            return None
+            return False
 
-    def _try_asr_http(self: "AsyncConversationManager", url: str):
-        """Try to connect to a FunASR HTTP server. Returns provider or None."""
+    def _try_asr_http(self: "AsyncConversationManager", url: str) -> bool:
+        """Try to connect to a FunASR HTTP server. Sets self._asr on success."""
         try:
             from backend.asr.providers import FunASRRemoteProvider
             remote = FunASRRemoteProvider(base_url=url)
-            if remote._client.health_check():
-                return remote
+            if remote.health_check():
+                self._asr = remote
+                return True
             else:
-                log.warn(f"[conversation] ASR HTTP health check failed: {url}")
-                return None
+                # Clean up on failure (I-6)
+                if hasattr(remote, 'close'):
+                    remote.close()
+                log.info(f"[conversation] ASR HTTP health check failed: {url}")
+                return False
         except Exception as e:
             log.warn(f"[conversation] ASR HTTP init failed: {e}")
-            return None
+            return False
 
     def _init_asr(self: "AsyncConversationManager"):
         """Initialise ASR: smart fallback WS -> HTTP -> local."""
@@ -172,14 +179,21 @@ class ComponentInitMixin:
         if remote_url:
             # Try WebSocket first (ws:// or wss://)
             if remote_url.startswith("ws://") or remote_url.startswith("wss://"):
-                self._asr = self._try_asr_websocket(remote_url)
-                if self._asr:
+                if self._try_asr_websocket(remote_url):
                     log.info(f"[conversation] ASR: WebSocket ({remote_url})")
+                    return
+                # WebSocket failed — try HTTP fallback (wss:// -> https://, ws:// -> http://)
+                log.info("[conversation] ASR WebSocket unavailable, trying HTTP fallback ...")
+                from urllib.parse import urlparse
+                http_url = remote_url.replace("wss://", "https://").replace("ws://", "http://")
+                parsed = urlparse(http_url)
+                http_base = f"{parsed.scheme}://{parsed.netloc}"
+                if self._try_asr_http(http_base):
+                    log.info(f"[conversation] ASR: HTTP fallback ({http_base})")
                     return
             # Try HTTP REST
             elif remote_url.startswith("http://") or remote_url.startswith("https://"):
-                self._asr = self._try_asr_http(remote_url)
-                if self._asr:
+                if self._try_asr_http(remote_url):
                     log.info(f"[conversation] ASR: HTTP ({remote_url})")
                     return
             # Unknown protocol, try both
@@ -261,7 +275,7 @@ class ComponentInitMixin:
                     log.debug(f"[conversation] TTS remote ready: {self.config.tts.remote_url}")
                     return
                 else:
-                    log.warn(f"TTS remote unavailable: {self.config.tts.remote_url}")
+                    log.info(f"TTS remote unavailable: {self.config.tts.remote_url}")
             except Exception as e:
                 log.warn(f"TTS remote init failed: {e}")
 
@@ -566,11 +580,147 @@ class ComponentInitMixin:
         self._init_tts()
         log.info("[conversation] TTS reloaded")
 
+    def reload_audio(self: "AsyncConversationManager"):
+        """Reload audio input/output settings with current config."""
+        try:
+            # AudioInput 内部读取 self.config，没有独立 setter，
+            # 因此通过重新创建对象来应用新配置。
+            if self._audio_input and hasattr(self._audio_input, 'stop_listening'):
+                try:
+                    self._audio_input.stop_listening()
+                except Exception:
+                    pass
+            self._audio_input = None
+            self._audio_output = None
+            self._init_audio()
+            log.info("[conversation] Audio devices reloaded")
+        except Exception as e:
+            log.warn(f"[conversation] Audio reload failed: {e}")
+
+    def reload_singing(self: "AsyncConversationManager"):
+        """Reload singing engine (DiffSinger) with current config."""
+        try:
+            singing_cfg = self.config.singing
+
+            # 旧引擎存在时，先清理
+            if self._singing is not None:
+                try:
+                    if hasattr(self._singing, 'cleanup'):
+                        self._singing.cleanup()
+                except Exception:
+                    pass
+                self._singing = None
+
+            if singing_cfg.enable:
+                self._init_singing()
+                if self._singing is not None:
+                    log.info("[conversation] Singing engine reloaded")
+                else:
+                    log.warn("[conversation] Singing engine reload failed")
+            else:
+                log.info("[conversation] Singing engine disabled, cleared")
+        except Exception as e:
+            log.warn(f"[conversation] Singing reload failed: {e}")
+
+    def reload_interrupt(self: "AsyncConversationManager"):
+        """Reload interrupt/barge-in settings with current config."""
+        try:
+            interrupt_cfg = self.config.interrupt
+
+            if self._audio_input is not None:
+                if hasattr(self._audio_input, 'update_interrupt_config'):
+                    self._audio_input.update_interrupt_config(
+                        min_speech_ms=interrupt_cfg.min_speech_ms,
+                    )
+                    log.info(
+                        f"[conversation] Interrupt config updated "
+                        f"(min_speech_ms={interrupt_cfg.min_speech_ms}, "
+                        f"enable_barge_in={interrupt_cfg.enable_barge_in})"
+                    )
+                else:
+                    log.warn("[conversation] AudioInput does not support update_interrupt_config")
+            else:
+                log.warn("[conversation] AudioInput not initialized, cannot update interrupt config")
+        except Exception as e:
+            log.warn(f"[conversation] Interrupt reload failed: {e}")
+
+    def reload_general(self: "AsyncConversationManager"):
+        """Reload general settings (use_text_input, auto_listen, ws_api_key)."""
+        try:
+            general_cfg = self.config.general
+
+            # use_text_input 变更：创建或销毁文字输入队列
+            if general_cfg.use_text_input:
+                if self._user_text_queue is None:
+                    self._user_text_queue = asyncio.Queue()
+                    log.info("[conversation] General: text-input queue created")
+            else:
+                if self._user_text_queue is not None:
+                    self._user_text_queue = None
+                    log.info("[conversation] General: text-input queue removed")
+
+            # auto_listen 更新（如果存在对应属性）
+            if hasattr(self, '_auto_listen'):
+                self._auto_listen = general_cfg.auto_listen
+                log.info(f"[conversation] General: auto_listen={general_cfg.auto_listen}")
+
+            log.info("[conversation] General settings reloaded")
+        except Exception as e:
+            log.warn(f"[conversation] General reload failed: {e}")
+
+    def reload_models(self: "AsyncConversationManager"):
+        """Reload model-dependent components (punc, ser, sv, diarization)."""
+        # SER
+        try:
+            ser_cfg = getattr(self.config, 'ser', None)
+            if ser_cfg and ser_cfg.enable:
+                # 清理旧实例
+                self._ser = None
+                self._init_ser()
+                if self._ser is not None:
+                    log.info("[conversation] SER engine reloaded")
+            else:
+                if self._ser is not None:
+                    self._ser = None
+                    log.info("[conversation] SER engine disabled, cleared")
+        except Exception as e:
+            log.warn(f"[conversation] SER reload failed: {e}")
+
+        # Diarization（含 SV + voiceprint_db + speaker_manager）
+        try:
+            diar_cfg = self.config.diarization
+            if diar_cfg.enable:
+                # 清理旧实例链
+                for attr in ('_diarization', '_sv', '_voiceprint_db', '_speaker_manager'):
+                    if getattr(self, attr, None) is not None:
+                        old = getattr(self, attr)
+                        if hasattr(old, 'cleanup'):
+                            try:
+                                old.cleanup()
+                            except Exception:
+                                pass
+                        setattr(self, attr, None)
+                self._init_diarization()
+                if self._diarization is not None:
+                    log.info("[conversation] Diarization engine reloaded")
+            else:
+                for attr in ('_diarization', '_sv', '_voiceprint_db', '_speaker_manager'):
+                    if getattr(self, attr, None) is not None:
+                        setattr(self, attr, None)
+                log.info("[conversation] Diarization disabled, cleared")
+        except Exception as e:
+            log.warn(f"[conversation] Diarization reload failed: {e}")
+
     def reload_component(self: "AsyncConversationManager", name: str):
         """Reload a specific component by name."""
         reload_map = {
             "asr": self.reload_asr,
             "tts": self.reload_tts,
+            "audio": self.reload_audio,
+            "singing": self.reload_singing,
+            "interrupt": self.reload_interrupt,
+            "general": self.reload_general,
+            "models": self.reload_models,
         }
         fn = reload_map.get(name)
         if fn:
