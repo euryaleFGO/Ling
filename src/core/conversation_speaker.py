@@ -123,6 +123,7 @@ class SpeakerRecognitionMixin:
         if not self._pending_registration and speaker_id == "unknown":
             self._pending_registration = True
             self._last_unknown_embedding = embedding.copy()
+            self._pending_user_text = user_text  # 保存原话，注册后补发
             prompt = getattr(speaker_recog_cfg, 'passive_prompt', '你好，我好像不认识你，请问你是谁呀？')
             log.info(f"[speaker] unknown speaker, asking: {prompt}")
             return "", False, prompt
@@ -150,6 +151,13 @@ class SpeakerRecognitionMixin:
                 log.debug("[speaker] no name extracted, skipping registration")
 
             self._last_unknown_embedding = None
-            return rest, bool(rest), ""
+            # 补发被丢弃的原话
+            pending_text = getattr(self, '_pending_user_text', '') or ''
+            self._pending_user_text = ''
+            if rest:
+                return rest, True, ""
+            if pending_text:
+                return pending_text, True, ""
+            return "", False, ""
 
         return user_text, True, ""
