@@ -115,7 +115,7 @@ def read_yaml(yaml_path: Union[str, Path]) -> dict:
     
     yaml_path = Path(yaml_path)
     if not yaml_path.exists():
-        raise FileExistsError(f"配置文件不存在: {yaml_path}")
+        raise FileNotFoundError(f"配置文件不存在: {yaml_path}")
 
     with open(str(yaml_path), "rb") as f:
         data = yaml.load(f, Loader=yaml.Loader)

@@ -10,7 +10,8 @@
 5. 多源融合
 """
 from typing import Optional, List, Dict, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+import copy
 import logging
 
 from .retriever import RetrievalResult, RetrievalSource
@@ -211,12 +212,13 @@ class ContextBuilder:
             content_tokens = len(result.content) // 2 + 10  # +10 for overhead
             
             if total_tokens + content_tokens > max_tokens:
-                # 尝试截断内容
+                # 尝试截断内容（创建副本避免修改共享对象）
                 remaining_tokens = max_tokens - total_tokens
                 if remaining_tokens > 50:  # 至少保留 50 tokens
                     max_chars = remaining_tokens * 2
-                    result.content = result.content[:max_chars] + "..."
-                    truncated.append(result)
+                    truncated_result = copy.copy(result)
+                    truncated_result.content = result.content[:max_chars] + "..."
+                    truncated.append(truncated_result)
                 break
             
             truncated.append(result)

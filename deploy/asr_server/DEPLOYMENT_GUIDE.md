@@ -1,7 +1,7 @@
 # ASR 服务器部署指南
 
-**更新时间**: 2026-04-27  
-**版本**: 1.0
+**更新时间**: 2026-05-08
+**版本**: 1.1
 
 ---
 
@@ -19,22 +19,59 @@ ASR 服务器提供统一的语音识别服务，包括：
 
 ## 🚀 快速开始
 
-### 1. 环境准备
+### 一键部署（推荐）
 
-#### 系统要求
+本部署包提供一键部署脚本，自动完成环境配置、依赖安装和模型下载：
+
+#### Linux/macOS
+
+```bash
+# 解压部署包
+unzip asr_server_deploy.zip
+cd asr_server
+
+# 一键部署（CPU 版本）
+bash setup.sh
+
+# 或 GPU 版本
+bash setup.sh --gpu
+
+# 启动服务
+bash start.sh
+```
+
+#### Windows
+
+```cmd
+# 解压部署包
+# 双击运行 setup.bat
+# 或命令行：
+setup.bat
+
+# 启动服务
+start.bat
+```
+
+### 手动部署
+
+如需手动控制每个步骤：
+
+#### 1. 环境准备
+
+##### 系统要求
 - **操作系统**: Linux (推荐 Ubuntu 20.04+) 或 Windows Server
 - **Python**: 3.8+
 - **内存**: 8GB+ (推荐 16GB+)
 - **GPU**: 可选，NVIDIA GPU with CUDA 11.0+ (推荐用于加速)
 
-#### 安装依赖
+##### 安装依赖
 
 ```bash
 # 进入项目目录
 cd /path/to/Liying
 
 # 安装 Python 依赖
-pip install -r deploy/asr_server/requirements.txt
+pip install -r requirements.txt
 
 # 如果使用 GPU
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118

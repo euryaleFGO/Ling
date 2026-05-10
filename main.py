@@ -180,6 +180,14 @@ def run_text_mode(debug_mode: bool):
     print("检查 MongoDB 状态...")
     _ensure_mongodb_for_text_mode()
     print("✅ MongoDB 已就绪\n")
+
+    # 启动 SSH 隧道
+    try:
+        from core.ssh_tunnel import start_ssh_tunnel
+        if start_ssh_tunnel():
+            print("✅ SSH 隧道已建立\n")
+    except Exception as e:
+        print(f"SSH 隧道跳过: {e}\n")
     
     agent = Agent(user_id="default_user")
     knowledge_dao = get_knowledge_dao()

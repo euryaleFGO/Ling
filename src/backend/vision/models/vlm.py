@@ -4,12 +4,15 @@
 支持 SmolVLM-256M 等轻量级 VLM 模型
 """
 
+import logging
 import os
 from pathlib import Path
 from typing import Union, Optional, List
 from dataclasses import dataclass
 
 import torch
+
+logger = logging.getLogger(__name__)
 import numpy as np
 from PIL import Image
 from transformers import AutoProcessor, AutoModelForVision2Seq
@@ -84,9 +87,23 @@ class VLMModel:
         self.model_name = model_name
         self.max_new_tokens = max_new_tokens
         
-        # 确定设备
+        # 确定设备 (Fix 6.7: check free GPU memory to avoid OOM on RTX 2050 4GB)
         if device == "auto":
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            if torch.cuda.is_available():
+                try:
+                    free, total = torch.cuda.mem_get_info()
+                    if free > 1 * 1024**3:  # Need at least 1GB free
+                        self.device = "cuda"
+                    else:
+                        self.device = "cpu"
+                        logger.warning(
+                            "Insufficient GPU memory (%.1fMB free), using CPU",
+                            free / 1024**2
+                        )
+                except Exception:
+                    self.device = "cuda"
+            else:
+                self.device = "cpu"
         else:
             self.device = device
         
@@ -113,6 +130,12 @@ class VLMModel:
         print(f"[VLM] 加载模型: {self.model_path}")
         
         try:
+            # Fix 6.13: warn about trust_remote_code
+            logger.warning(
+                "Loading model with trust_remote_code=True (local_files_only=True). "
+                "This allows arbitrary code execution during model loading."
+            )
+
             # 加载 processor
             self.processor = AutoProcessor.from_pretrained(
                 str(self.model_path),
@@ -167,7 +190,12 @@ class VLMModel:
     def _load_image(self, image: Union[str, Path, Image.Image, np.ndarray]) -> Image.Image:
         """加载图像为 PIL Image"""
         if isinstance(image, (str, Path)):
-            return Image.open(image).convert("RGB")
+            # Fix 6.14: open-convert-copy-close to avoid PIL file handle leak
+            pil_img = Image.open(image)
+            try:
+                return pil_img.convert("RGB").copy()
+            finally:
+                pil_img.close()
         elif isinstance(image, Image.Image):
             return image.convert("RGB")
         elif isinstance(image, np.ndarray):
@@ -229,12 +257,13 @@ class VLMModel:
         # 移动到设备
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
         
-        # 生成
+        # 生成 (Fix 6.15: guard against temperature=0 division by zero)
+        safe_temperature = max(temperature, 0.01)
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens or self.max_new_tokens,
-                temperature=temperature,
+                temperature=safe_temperature,
                 top_p=top_p,
                 do_sample=True,
             )
@@ -323,12 +352,13 @@ class VLMModel:
         # 移动到设备
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
         
-        # 生成
+        # 生成 (Fix 6.15: guard against temperature=0 division by zero)
+        safe_temperature = max(temperature, 0.01)
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens or self.max_new_tokens,
-                temperature=temperature,
+                temperature=safe_temperature,
                 top_p=top_p,
                 do_sample=True,
             )

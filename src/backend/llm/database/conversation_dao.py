@@ -6,9 +6,13 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pymongo.collection import Collection
 from bson import ObjectId
+import logging
+import threading
 import uuid
 
 from .mongo_client import get_db
+
+logger = logging.getLogger(__name__)
 
 
 class ConversationDAO:
@@ -68,18 +72,18 @@ class ConversationDAO:
         role: str,
         content: str,
         emotion: Optional[str] = None,
-        extra: Optional[Dict] = None
+        metadata: Optional[Dict] = None
     ) -> bool:
         """
         添加消息到会话
-        
+
         Args:
             session_id: 会话ID
             role: 角色 (user | assistant | system)
             content: 消息内容
             emotion: 情感标签 (可选)
-            extra: 额外信息 (可选)
-            
+            metadata: 额外元数据 (可选)
+
         Returns:
             是否成功
         """
@@ -88,12 +92,29 @@ class ConversationDAO:
             "content": content,
             "timestamp": datetime.utcnow(),
         }
-        
+
         if emotion:
             message["emotion"] = emotion
-        if extra:
-            message["extra"] = extra
+        if metadata:
+            message["metadata"] = metadata
         
+        # Check document size safety limit before adding message
+        doc = self.collection.find_one(
+            {"session_id": session_id}, {"messages": {"$slice": -1}}
+        )
+        if doc:
+            # Use a lightweight count estimate via the session doc
+            full_doc = self.collection.find_one(
+                {"session_id": session_id}, {"messages": 1}
+            )
+            if full_doc:
+                msg_count = len(full_doc.get("messages", []))
+                if msg_count > 10000:
+                    logger.warning(
+                        f"Session {session_id} has {msg_count} messages, "
+                        f"approaching MongoDB document size limit. Consider archiving."
+                    )
+
         result = self.collection.update_one(
             {"session_id": session_id},
             {
@@ -101,7 +122,11 @@ class ConversationDAO:
                 "$set": {"updated_at": datetime.utcnow()}
             }
         )
-        
+
+        if not result.acknowledged:
+            logger.error(f"Failed to add message to session {session_id}: write not acknowledged")
+            return False
+
         return result.modified_count > 0
     
     def get_session(self, session_id: str) -> Optional[Dict]:
@@ -243,11 +268,14 @@ class ConversationDAO:
 
 # 全局实例
 _conversation_dao: Optional[ConversationDAO] = None
+_conversation_dao_lock = threading.Lock()
 
 
 def get_conversation_dao() -> ConversationDAO:
-    """获取对话DAO实例"""
+    """获取对话DAO实例（线程安全）"""
     global _conversation_dao
     if _conversation_dao is None:
-        _conversation_dao = ConversationDAO()
+        with _conversation_dao_lock:
+            if _conversation_dao is None:
+                _conversation_dao = ConversationDAO()
     return _conversation_dao

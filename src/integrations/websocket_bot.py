@@ -9,13 +9,16 @@ import os
 import sys
 import json
 import time
+import hmac
 import asyncio
+import concurrent.futures
 import logging
 from typing import Dict, Set, Optional
 import websockets
 from websockets.server import WebSocketServerProtocol
 
 from backend.llm.agent.agent import Agent
+from core.config_manager import get_config_manager
 from core.log import log
 from integrations.base_bot import BaseBot
 
@@ -61,7 +64,8 @@ class WebSocketChatBot(BaseBot):
         """注销连接"""
         if user_id in self.connections:
             del self.connections[user_id]
-            self.active_connections -= 1
+            if self.active_connections > 0:
+                self.active_connections -= 1
             logger.info(f"用户 {user_id} 断开连接，当前活跃连接: {self.active_connections}")
 
         # 保留 Agent 会话一段时间，以便重连时恢复上下文
@@ -124,10 +128,32 @@ class WebSocketChatBot(BaseBot):
             chunk_buffer = ""
             
             try:
-                for chunk in agent.chat(content, stream=True):
+                # Use a queue to stream chunks from the sync generator
+                # to the async context without materializing the entire stream
+                chunk_queue: asyncio.Queue = asyncio.Queue()
+                _sentinel = object()
+
+                def _produce_chunks():
+                    try:
+                        for chunk in agent.chat(content, stream=True):
+                            asyncio.run_coroutine_threadsafe(
+                                chunk_queue.put(chunk), loop
+                            ).result()
+                    finally:
+                        asyncio.run_coroutine_threadsafe(
+                            chunk_queue.put(_sentinel), loop
+                        ).result()
+
+                loop = asyncio.get_event_loop()
+                loop.run_in_executor(None, _produce_chunks)
+
+                while True:
+                    chunk = await chunk_queue.get()
+                    if chunk is _sentinel:
+                        break
                     response_parts.append(chunk)
                     chunk_buffer += chunk
-                    
+
                     # 每收集一定字符就发送一次中间结果
                     if len(chunk_buffer) >= 10:  # 每10个字符发送一次
                         await self.send_message(user_id, {
@@ -136,7 +162,7 @@ class WebSocketChatBot(BaseBot):
                             "timestamp": int(time.time())
                         })
                         chunk_buffer = ""
-                
+
                 # 发送最终完整回复
                 full_response = "".join(response_parts)
                 await self.send_message(user_id, {
@@ -144,7 +170,7 @@ class WebSocketChatBot(BaseBot):
                     "message": full_response,
                     "timestamp": int(time.time())
                 })
-                
+
                 logger.info(f"AI 回复给 {user_id}: {full_response[:50]}...")
                 
             except Exception as e:
@@ -168,8 +194,8 @@ class WebSocketChatBot(BaseBot):
         user_id = None
         
         try:
-            # 等待用户发送认证信息
-            auth_message = await websocket.recv()
+            # 等待用户发送认证信息（30秒超时）
+            auth_message = await asyncio.wait_for(websocket.recv(), timeout=30)
             auth_data = json.loads(auth_message)
             
             if auth_data.get("type") != "auth":
@@ -179,9 +205,18 @@ class WebSocketChatBot(BaseBot):
                 }))
                 return
             
+            # API key authentication
+            expected_key = get_config_manager().config.general.ws_api_key
+            if expected_key and not hmac.compare_digest(auth_data.get("api_key", ""), expected_key):
+                await websocket.send(json.dumps({
+                    "type": "error",
+                    "message": "Authentication failed"
+                }))
+                return
+
             user_id = auth_data.get("user_id", f"user_{int(time.time())}")
             user_name = auth_data.get("user_name", user_id)
-            
+
             # 注册连接
             await self.register_connection(websocket, user_id)
             

@@ -67,9 +67,11 @@ class WeWorkAppBot(BaseBot):
         }
         
         try:
-            response = requests.get(url, params=params, timeout=10)
+            response = await asyncio.to_thread(
+                requests.get, url, params=params, timeout=10
+            )
             data = response.json()
-            
+
             if data.get("errcode") == 0:
                 self.access_token = data["access_token"]
                 # token 有效期通常是 7200 秒，提前 5 分钟刷新
@@ -79,7 +81,7 @@ class WeWorkAppBot(BaseBot):
             else:
                 logger.error(f"获取 access_token 失败: {data}")
                 return None
-                
+
         except Exception as e:
             logger.error(f"获取 access_token 异常: {e}")
             return None
@@ -114,14 +116,14 @@ class WeWorkAppBot(BaseBot):
             message_data["markdown"] = {"content": content}
         
         try:
-            response = requests.post(
-                url,
+            response = await asyncio.to_thread(
+                requests.post, url,
                 params=params,
                 json=message_data,
                 headers={"Content-Type": "application/json"},
-                timeout=10
+                timeout=10,
             )
-            
+
             result = response.json()
             if result.get("errcode") == 0:
                 logger.info(f"消息发送成功给用户 {user_id}")
@@ -129,11 +131,11 @@ class WeWorkAppBot(BaseBot):
             else:
                 logger.error(f"消息发送失败: {result}")
                 return False
-                
+
         except Exception as e:
             logger.error(f"发送消息异常: {e}")
             return False
-    
+
     def _get_user_agent(self, user_id: str) -> Agent:
         """获取或创建用户的 Agent 实例"""
         return self.get_or_create_agent(user_id)
@@ -232,8 +234,8 @@ class WeWorkAppBot(BaseBot):
         }
 
         try:
-            response = requests.post(
-                url,
+            response = await asyncio.to_thread(
+                requests.post, url,
                 params=params,
                 json=data,
                 headers={"Content-Type": "application/json"},
@@ -269,12 +271,12 @@ class WeWorkWebhookHandler:
             
             tmp_list.sort()
             tmp_str = "".join(tmp_list)
-            
+
             import hashlib
             hash_obj = hashlib.sha1(tmp_str.encode('utf-8'))
             hashcode = hash_obj.hexdigest()
-            
-            return hashcode == signature
+
+            return hmac.compare_digest(hashcode, signature)
             
         except Exception as e:
             logger.error(f"签名验证异常: {e}")
@@ -299,32 +301,41 @@ class WeWorkWebhookHandler:
 
 def create_flask_app(bot_id: str, secret: str, token: str, encoding_aes_key: str = None):
     """创建 Flask 应用"""
+    import threading
     from flask import Flask, request, jsonify
-    
+
     app = Flask(__name__)
     bot = WeWorkAppBot(bot_id, secret)
     webhook_handler = WeWorkWebhookHandler(bot, token, encoding_aes_key)
-    
+
+    # Persistent event loop in a background thread
+    _loop = asyncio.new_event_loop()
+    _loop_thread = threading.Thread(target=_loop.run_forever, daemon=True)
+    _loop_thread.start()
+
     @app.route('/webhook', methods=['GET', 'POST'])
-    async def webhook():
+    def webhook():
         if request.method == 'GET':
             # 验证回调 URL
             signature = request.args.get('msg_signature', '')
             timestamp = request.args.get('timestamp', '')
             nonce = request.args.get('nonce', '')
             echostr = request.args.get('echostr', '')
-            
+
             if webhook_handler.verify_signature(signature, timestamp, nonce, echostr):
                 return echostr
             else:
                 return "Invalid signature", 403
-        
+
         elif request.method == 'POST':
             # 处理消息
             data = request.get_json() or {}
             query_params = dict(request.args)
-            
-            result = await webhook_handler.handle_webhook(data, query_params)
+
+            future = asyncio.run_coroutine_threadsafe(
+                webhook_handler.handle_webhook(data, query_params), _loop
+            )
+            result = future.result(timeout=30)
             return jsonify(result)
     
     @app.route('/health', methods=['GET'])

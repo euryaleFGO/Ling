@@ -417,11 +417,32 @@ class WeWorkBotWebSocket(BaseBot):
                 # 使用流式生成（Agent.chat 返回生成器，逐字符生成）
                 char_buffer = ""
                 update_threshold = 5  # 每累积 5 个字符更新一次
-                
-                for char in agent.chat(user_message, stream=True):
+
+                # Stream chunks via queue instead of materializing with list()
+                chunk_queue: asyncio.Queue = asyncio.Queue()
+                _sentinel = object()
+
+                def _produce_chunks():
+                    try:
+                        for chunk in agent.chat(user_message, stream=True):
+                            asyncio.run_coroutine_threadsafe(
+                                chunk_queue.put(chunk), loop
+                            ).result()
+                    finally:
+                        asyncio.run_coroutine_threadsafe(
+                            chunk_queue.put(_sentinel), loop
+                        ).result()
+
+                loop = asyncio.get_event_loop()
+                loop.run_in_executor(None, _produce_chunks)
+
+                while True:
+                    char = await chunk_queue.get()
+                    if char is _sentinel:
+                        break
                     full_response += char
                     char_buffer += char
-                    
+
                     # 累积一定字符后再更新，减少网络请求
                     if len(char_buffer) >= update_threshold:
                         await self._send_stream_chunk(
@@ -431,7 +452,7 @@ class WeWorkBotWebSocket(BaseBot):
                             finish=False
                         )
                         char_buffer = ""
-                        
+
                         # 控制更新频率
                         await asyncio.sleep(0.05)
                 
@@ -481,6 +502,8 @@ class WeWorkBotWebSocket(BaseBot):
         finish: bool = False
     ):
         """发送流式消息块"""
+        if not self.ws or not self.connected:
+            return
         try:
             stream_msg = {
                 "cmd": "aibot_respond_msg",
@@ -523,13 +546,15 @@ class WeWorkBotWebSocket(BaseBot):
     ):
         """
         主动推送消息
-        
+
         Args:
             chatid: 会话 ID（单聊填 userid，群聊填 chatid）
             content: 消息内容
             chat_type: 会话类型（1=单聊，2=群聊）
             msgtype: 消息类型（markdown/template_card）
         """
+        if not self.ws or not self.connected:
+            return
         try:
             req_id = self._generate_req_id()
             

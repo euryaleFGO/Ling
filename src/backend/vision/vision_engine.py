@@ -6,6 +6,7 @@
 
 import logging
 import os
+import threading
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Union, List, Optional, Dict, Any
@@ -171,54 +172,65 @@ class VisionEngine:
         self._detector = None
         self._ocr = None
         self._vlm = None
-        
+
         # 加载状态
         self._modules_loaded = set()
 
+        # Thread lock for lazy loader safety (Fix 6.12)
+        self._vision_lock = threading.Lock()
+
     def _get_captioner(self):
-        """获取图像描述模块"""
+        """获取图像描述模块 (double-checked locking for thread safety)"""
         if self._captioner is None and self.config.enable_captioner:
-            from .models.captioner import ImageCaptioner
-            self._captioner = ImageCaptioner(
-                model_name=self.config.captioner_model,
-                device=self.config.device,
-                use_fp16=self.config.use_fp16
-            )
+            with self._vision_lock:
+                if self._captioner is None:
+                    from .models.captioner import ImageCaptioner
+                    self._captioner = ImageCaptioner(
+                        model_name=self.config.captioner_model,
+                        device=self.config.device,
+                        use_fp16=self.config.use_fp16
+                    )
         return self._captioner
 
     def _get_detector(self):
-        """获取目标检测模块"""
+        """获取目标检测模块 (double-checked locking for thread safety)"""
         if self._detector is None and self.config.enable_detector:
-            from .models.detector import ObjectDetector
-            self._detector = ObjectDetector(
-                model_name=self.config.detector_model,
-                device=self.config.device,
-                confidence_threshold=self.config.detection_confidence
-            )
+            with self._vision_lock:
+                if self._detector is None:
+                    from .models.detector import ObjectDetector
+                    self._detector = ObjectDetector(
+                        model_name=self.config.detector_model,
+                        device=self.config.device,
+                        confidence_threshold=self.config.detection_confidence
+                    )
         return self._detector
 
     def _get_ocr(self):
-        """获取 OCR 模块"""
+        """获取 OCR 模块 (double-checked locking for thread safety)"""
         if self._ocr is None and self.config.enable_ocr:
-            from .models.ocr import TextRecognizer
-            use_gpu = self.config.device != "cpu"
-            self._ocr = TextRecognizer(
-                languages=self.config.ocr_languages,
-                use_gpu=use_gpu,
-                backend=self.config.ocr_backend
-            )
+            with self._vision_lock:
+                if self._ocr is None:
+                    from .models.ocr import TextRecognizer
+                    use_gpu = self.config.device != "cpu"
+                    self._ocr = TextRecognizer(
+                        languages=self.config.ocr_languages,
+                        use_gpu=use_gpu,
+                        backend=self.config.ocr_backend
+                    )
         return self._ocr
 
     def _get_vlm(self):
-        """获取 VLM 模块"""
+        """获取 VLM 模块 (double-checked locking for thread safety)"""
         if self._vlm is None and self.config.enable_vlm:
-            from .models.vlm import VLMModel
-            self._vlm = VLMModel(
-                model_path=self.config.vlm_model_path,
-                model_name=self.config.vlm_model,
-                device=self.config.device,
-                use_fp16=self.config.use_fp16
-            )
+            with self._vision_lock:
+                if self._vlm is None:
+                    from .models.vlm import VLMModel
+                    self._vlm = VLMModel(
+                        model_path=self.config.vlm_model_path,
+                        model_name=self.config.vlm_model,
+                        device=self.config.device,
+                        use_fp16=self.config.use_fp16
+                    )
         return self._vlm
 
     def analyze(
@@ -242,7 +254,10 @@ class VisionEngine:
         # 加载图像获取尺寸
         if isinstance(image, (str, Path)):
             pil_img = Image.open(image)
-            result.image_size = pil_img.size
+            try:
+                result.image_size = pil_img.size
+            finally:
+                pil_img.close()
         elif isinstance(image, Image.Image):
             result.image_size = image.size
         elif isinstance(image, np.ndarray):

@@ -4,6 +4,7 @@
 """
 from typing import Optional, List, Dict, Any
 from datetime import datetime
+import hashlib
 import logging
 import math
 
@@ -51,6 +52,7 @@ class ContextManager:
         
         self._current_session_id: Optional[str] = None
         self._system_prompt: Optional[str] = None
+        self._system_prompt_hash: Optional[str] = None
     
     @property
     def session_id(self) -> Optional[str]:
@@ -169,43 +171,73 @@ class ContextManager:
             for msg in messages
         ]
     
+    def _compute_settings_hash(self) -> str:
+        """
+        计算角色设定和用户档案的哈希值，用于缓存失效检测。
+        """
+        parts = []
+
+        character = self._knowledge_dao.get_active_character()
+        if character:
+            parts.append(repr(sorted(character.items())))
+
+        user_profile = self._knowledge_dao.get_user_profile(self.user_id)
+        if user_profile:
+            parts.append(repr(sorted(user_profile.items())))
+
+        important_memories = self._memory_dao.get_important_memories(
+            self.user_id, min_importance=0.7, limit=5
+        )
+        if important_memories:
+            parts.append(repr([m.get("content", "") for m in important_memories]))
+
+        raw = "|".join(parts)
+        return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
     def get_system_prompt(self) -> str:
         """
         获取系统提示词
-        
+
         包含:
         1. 角色人设
         2. 用户偏好
         3. 重要长期记忆
         4. 当前日期时间
+
+        使用哈希值检测设定变更，会话内变更时自动刷新缓存。
         """
+        # 检查缓存是否仍然有效
         if self._system_prompt:
-            return self._system_prompt
-        
+            current_hash = self._compute_settings_hash()
+            if self._system_prompt_hash == current_hash:
+                return self._system_prompt
+            # 设定已变更，刷新缓存
+            logger.info("[上下文] 检测到设定变更，刷新系统提示词缓存")
+
         parts = []
-        
+
         # 1. 获取角色设定
         character = self._knowledge_dao.get_active_character()
         if character:
             parts.append(character.get("system_prompt", ""))
-        
+
         # 添加当前日期时间
         now = datetime.now()
         weekdays = ['一', '二', '三', '四', '五', '六', '日']
         parts.append(f"\n当前日期时间: {now.strftime('%Y年%m月%d日 %H:%M')} (星期{weekdays[now.weekday()]})")
-        
+
         # 2. 获取用户偏好
         user_profile = self._knowledge_dao.get_user_profile(self.user_id)
         if user_profile:
             nickname = user_profile.get("nickname", "用户")
             parts.append(f"\n用户希望你称呼他为: {nickname}")
-            
+
             prefs = user_profile.get("preferences", {})
             if prefs.get("topics_like"):
                 parts.append(f"用户喜欢的话题: {', '.join(prefs['topics_like'])}")
             if prefs.get("topics_avoid"):
                 parts.append(f"用户不喜欢的话题: {', '.join(prefs['topics_avoid'])}")
-        
+
         # 3. 获取重要长期记忆
         important_memories = self._memory_dao.get_important_memories(
             self.user_id,
@@ -225,6 +257,7 @@ class ContextManager:
                     parts.append(f"\n上次对话摘要:\n{prev_summary}")
 
         self._system_prompt = "\n".join(parts)
+        self._system_prompt_hash = self._compute_settings_hash()
         return self._system_prompt
     
     def build_messages(
@@ -274,6 +307,7 @@ class ContextManager:
     def clear_cache(self):
         """清除缓存"""
         self._system_prompt = None
+        self._system_prompt_hash = None
     
     def get_session_info(self) -> Dict:
         """获取当前会话信息"""

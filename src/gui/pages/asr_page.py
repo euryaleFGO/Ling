@@ -1,15 +1,13 @@
 """
 ASR 语音识别配置页面
 """
-import json
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QGroupBox, QPushButton, QComboBox,
     QFormLayout, QMessageBox, QScrollArea, QCheckBox,
-    QFrame
+    QFrame, QDoubleSpinBox
 )
 from PyQt6.QtCore import Qt
-from pathlib import Path
 
 from core.config_manager import get_config_manager
 
@@ -19,7 +17,6 @@ class AsrPage(QWidget):
 
     def __init__(self):
         super().__init__()
-        self._loading = False
         self.init_ui()
         self.load_settings()
 
@@ -61,6 +58,12 @@ class AsrPage(QWidget):
         self.remote_url_edit.setPlaceholderText("ws://localhost:10095 或 http://localhost:5002")
         self.remote_url_edit.setToolTip("远程 ASR 服务地址，支持 ws:// (WebSocket) 和 http:// (REST) 协议")
         basic_layout.addRow("远程服务地址:", self.remote_url_edit)
+
+        # SSL 验证
+        self.verify_ssl_check = QCheckBox("验证 SSL 证书")
+        self.verify_ssl_check.setChecked(True)
+        self.verify_ssl_check.setToolTip("连接 wss:// 远程服务时是否验证 SSL 证书（自签名证书请取消勾选）")
+        basic_layout.addRow("", self.verify_ssl_check)
 
         # 设备
         self.device_combo = QComboBox()
@@ -118,13 +121,32 @@ class AsrPage(QWidget):
         self.hotwords_edit.setToolTip("热词列表，用逗号分隔，可以提高特定词汇的识别率")
         hotword_layout.addRow("热词列表:", self.hotwords_edit)
 
-        self.hotword_weight_edit = QLineEdit()
-        self.hotword_weight_edit.setPlaceholderText("10.0")
+        self.hotword_weight_edit = QDoubleSpinBox()
+        self.hotword_weight_edit.setRange(0.1, 100.0)
+        self.hotword_weight_edit.setValue(10.0)
+        self.hotword_weight_edit.setSingleStep(1.0)
         self.hotword_weight_edit.setToolTip("热词权重，值越大热词越容易被识别（默认 10.0）")
         hotword_layout.addRow("热词权重:", self.hotword_weight_edit)
 
         hotword_group.setLayout(hotword_layout)
         layout.addWidget(hotword_group)
+
+        # ── 连接状态组 ──
+        status_group = QGroupBox("连接状态")
+        status_layout = QFormLayout()
+        status_layout.setSpacing(14)
+        status_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self.status_label = QLabel("未检测")
+        status_layout.addRow("状态:", self.status_label)
+
+        self.test_status_btn = QPushButton("测试连接")
+        self.test_status_btn.setProperty("class", "secondary")
+        self.test_status_btn.clicked.connect(self._test_connection)
+        status_layout.addRow("", self.test_status_btn)
+
+        status_group.setLayout(status_layout)
+        layout.addWidget(status_group)
 
         # ── 缓存配置组 ──
         cache_group = QGroupBox("模型缓存")
@@ -146,11 +168,6 @@ class AsrPage(QWidget):
         # ── 操作按钮 ──
         button_layout = QHBoxLayout()
         button_layout.addStretch()
-
-        self.test_btn = QPushButton("测试连接")
-        self.test_btn.setProperty("class", "secondary")
-        self.test_btn.clicked.connect(self.test_connection)
-        button_layout.addWidget(self.test_btn)
 
         self.save_btn = QPushButton("保存设置")
         self.save_btn.clicked.connect(self.save_settings)
@@ -179,7 +196,6 @@ class AsrPage(QWidget):
     # ================================================================
     def load_settings(self):
         """从 ConfigManager 加载设置"""
-        self._loading = True
         try:
             cfg = get_config_manager().config
             asr = cfg.asr
@@ -201,7 +217,10 @@ class AsrPage(QWidget):
             # 热词配置
             if asr.hotwords:
                 self.hotwords_edit.setText(",".join(asr.hotwords))
-            self.hotword_weight_edit.setText(str(asr.hotword_weight))
+            self.hotword_weight_edit.setValue(float(asr.hotword_weight or 10.0))
+
+            # SSL 验证
+            self.verify_ssl_check.setChecked(asr.verify_ssl)
 
             # 缓存配置
             self.enable_cache_check.setChecked(asr.enable_model_cache)
@@ -209,8 +228,6 @@ class AsrPage(QWidget):
 
         except Exception as e:
             print(f"加载 ASR 设置失败: {e}")
-        finally:
-            self._loading = False
 
     def save_settings(self):
         """保存设置到 ConfigManager"""
@@ -234,16 +251,20 @@ class AsrPage(QWidget):
                 asr.hotwords = [w.strip() for w in hotwords_text.split(",") if w.strip()]
             else:
                 asr.hotwords = []
-            try:
-                asr.hotword_weight = float(self.hotword_weight_edit.text().strip() or "10.0")
-            except ValueError:
-                asr.hotword_weight = 10.0
+            asr.hotword_weight = self.hotword_weight_edit.value()
+
+            # SSL 验证
+            asr.verify_ssl = self.verify_ssl_check.isChecked()
 
             # 缓存配置
             asr.enable_model_cache = self.enable_cache_check.isChecked()
             asr.cache_warmup = self.cache_warmup_check.isChecked()
 
             cfg.save()
+            try:
+                self.window().notify_config_saved("asr")
+            except Exception:
+                pass
             QMessageBox.information(self, "保存成功", "ASR 设置已保存到 settings.json")
         except Exception as e:
             QMessageBox.critical(self, "保存失败", f"保存设置失败: {e}")
@@ -262,7 +283,8 @@ class AsrPage(QWidget):
             self.whisper_api_base_edit.clear()
             self.whisper_api_key_edit.clear()
             self.hotwords_edit.clear()
-            self.hotword_weight_edit.setText("10.0")
+            self.hotword_weight_edit.setValue(10.0)
+            self.verify_ssl_check.setChecked(True)
             self.enable_cache_check.setChecked(True)
             self.cache_warmup_check.setChecked(False)
 
@@ -278,47 +300,68 @@ class AsrPage(QWidget):
             self.whisper_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
             self.show_whisper_key_btn.setText("👁")
 
-    def test_connection(self):
-        """测试 ASR 连接"""
+    def _test_connection(self):
+        """测试 ASR 连接（后台线程）"""
+        from PyQt6.QtCore import QThread, pyqtSignal
+
         provider = self.provider_combo.currentText()
         remote_url = self.remote_url_edit.text().strip()
 
         if not remote_url:
-            QMessageBox.warning(self, "提示", "请先填写远程服务地址")
+            self.status_label.setText("请先填写远程服务地址")
             return
 
-        self.test_btn.setText("测试中...")
-        self.test_btn.setEnabled(False)
+        self.test_status_btn.setEnabled(False)
+        self.status_label.setText("测试中...")
 
-        try:
-            if provider == "funasr":
-                if remote_url.startswith("ws://") or remote_url.startswith("wss://"):
-                    from backend.asr.providers import FunASRWebSocketProvider
-                    ws_asr = FunASRWebSocketProvider(uri=remote_url)
-                    if ws_asr.health_check(timeout=5.0):
-                        QMessageBox.information(self, "连接成功", f"WebSocket 连接成功: {remote_url}")
+        whisper_api_base = self.whisper_api_base_edit.text().strip() or "https://api.openai.com/v1"
+        whisper_api_key = self.whisper_api_key_edit.text().strip()
+
+        class AsrTestThread(QThread):
+            finished = pyqtSignal(str)
+
+            def __init__(self, provider, remote_url, whisper_api_base, whisper_api_key):
+                super().__init__()
+                self._provider = provider
+                self._remote_url = remote_url
+                self._whisper_api_base = whisper_api_base
+                self._whisper_api_key = whisper_api_key
+
+            def run(self):
+                try:
+                    if self._provider == "funasr":
+                        if self._remote_url.startswith("ws://") or self._remote_url.startswith("wss://"):
+                            from backend.asr.providers import FunASRWebSocketProvider
+                            ws_asr = FunASRWebSocketProvider(uri=self._remote_url, verify_ssl=True)
+                            if ws_asr.health_check(timeout=5.0):
+                                self.finished.emit("已连接 (WebSocket)")
+                            else:
+                                self.finished.emit("连接失败 (WebSocket 超时)")
+                            ws_asr.stop()
+                        else:
+                            from backend.asr.providers import FunASRRemoteProvider
+                            remote = FunASRRemoteProvider(base_url=self._remote_url)
+                            if remote.health_check():
+                                self.finished.emit("已连接 (HTTP)")
+                            else:
+                                self.finished.emit("连接失败 (HTTP)")
+                    elif self._provider == "whisper":
+                        if not self._whisper_api_key:
+                            self.finished.emit("请先填写 Whisper API Key")
+                            return
+                        from backend.asr.providers import WhisperRemoteProvider
+                        WhisperRemoteProvider(api_base=self._whisper_api_base, api_key=self._whisper_api_key)
+                        self.finished.emit("配置有效 (Whisper)")
                     else:
-                        QMessageBox.warning(self, "连接失败", f"WebSocket 连接超时: {remote_url}")
-                    ws_asr.stop()
-                else:
-                    from backend.asr.providers import FunASRRemoteProvider
-                    remote = FunASRRemoteProvider(base_url=remote_url)
-                    if remote._client.health_check():
-                        QMessageBox.information(self, "连接成功", f"HTTP 连接成功: {remote_url}")
-                    else:
-                        QMessageBox.warning(self, "连接失败", f"HTTP 连接失败: {remote_url}")
-            elif provider == "whisper":
-                api_base = self.whisper_api_base_edit.text().strip() or "https://api.openai.com/v1"
-                api_key = self.whisper_api_key_edit.text().strip()
-                if not api_key:
-                    QMessageBox.warning(self, "提示", "请先填写 Whisper API Key")
-                    return
-                # 简单测试：尝试创建 provider
-                from backend.asr.providers import WhisperRemoteProvider
-                WhisperRemoteProvider(api_base=api_base, api_key=api_key)
-                QMessageBox.information(self, "配置有效", "Whisper API 配置格式正确（实际连接需要录音测试）")
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"测试失败: {e}")
-        finally:
-            self.test_btn.setText("测试连接")
-            self.test_btn.setEnabled(True)
+                        self.finished.emit(f"未知提供商: {self._provider}")
+                except Exception as e:
+                    self.finished.emit(f"测试失败: {e}")
+
+        self._asr_test_thread = AsrTestThread(provider, remote_url, whisper_api_base, whisper_api_key)
+
+        def on_result(msg):
+            self.status_label.setText(msg)
+            self.test_status_btn.setEnabled(True)
+
+        self._asr_test_thread.finished.connect(on_result)
+        self._asr_test_thread.start()

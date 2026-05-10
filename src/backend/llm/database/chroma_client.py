@@ -2,6 +2,7 @@
 Chroma 向量数据库客户端
 用于 RAG 检索
 """
+import atexit
 import logging
 import os
 from pathlib import Path
@@ -25,6 +26,7 @@ except Exception as e:  # 依赖可能因网络/代理无法安装
     Settings = None
     ONNXMiniLM_L6_V2 = object
 from typing import Optional, List, Dict, Any
+import threading
 
 
 class LocalONNXMiniLM(ONNXMiniLM_L6_V2):
@@ -116,16 +118,40 @@ class ChromaClient:
         """获取对话集合"""
         return self.get_or_create_collection(self.CONVERSATION_COLLECTION)
 
+    def close(self):
+        """关闭 Chroma 客户端，刷新文件句柄"""
+        try:
+            if self._client is not None:
+                # PersistentClient 自动持久化，但显式引用清理有助于 GC
+                logger.info("Chroma 客户端正在关闭")
+                self._client = None
+                self._embedding_function = None
+        except Exception as e:
+            logger.warning(f"Chroma 客户端关闭异常: {e}")
+
 
 # 全局实例
 _chroma_client: Optional[ChromaClient] = None
+_chroma_client_lock = threading.Lock()
+
+
+def _shutdown_chroma():
+    """atexit 回调：确保 Chroma 客户端在进程退出时正确关闭"""
+    global _chroma_client
+    if _chroma_client is not None:
+        _chroma_client.close()
+
+
+atexit.register(_shutdown_chroma)
 
 
 def get_chroma_client(persist_directory: str = None) -> ChromaClient:
-    """获取 Chroma 客户端实例"""
+    """获取 Chroma 客户端实例（线程安全）"""
     global _chroma_client
     if _chroma_client is None:
-        _chroma_client = ChromaClient(persist_directory)
+        with _chroma_client_lock:
+            if _chroma_client is None:
+                _chroma_client = ChromaClient(persist_directory)
     return _chroma_client
 
 

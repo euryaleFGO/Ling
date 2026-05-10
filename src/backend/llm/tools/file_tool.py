@@ -4,6 +4,7 @@
 """
 from typing import List, Optional
 from datetime import datetime
+from pathlib import Path
 import os
 import time
 
@@ -56,22 +57,34 @@ class FileWriteTool(BaseTool):
     def execute(self, content: str, filename: str = "") -> ToolResult:
         """写入文件"""
         try:
+            # 安全检查：路径遍历防护（resolve symlinks + is_relative_to）
+            if filename:
+                # Reject absolute paths and obvious traversal
+                if os.path.isabs(filename):
+                    return ToolResult(success=False, error="安全限制：不允许绝对路径")
+
+                # Build the full path then verify it's under the allowed dir
+                candidate = os.path.realpath(os.path.join(self._default_save_dir, filename))
+                allowed_resolved = Path(self._default_save_dir).resolve()
+                if not Path(candidate).is_relative_to(allowed_resolved):
+                    return ToolResult(success=False, error="安全限制：不允许路径遍历")
+
             # 生成文件名
             if not filename:
                 timestamp = int(time.time())
                 filename = f"{timestamp}.txt"
-            
+
             # 确保有扩展名
             if not filename.endswith('.txt'):
                 filename += '.txt'
-            
-            # 完整路径
-            save_path = os.path.join(self._default_save_dir, filename)
-            
+
+            # 完整路径（使用 realpath 防止 symlink 绕过）
+            save_path = os.path.realpath(os.path.join(self._default_save_dir, filename))
+
             # 写入文件
             with open(save_path, 'w', encoding='utf-8') as f:
                 f.write(content)
-            
+
             return ToolResult(
                 success=True,
                 data={
@@ -122,21 +135,27 @@ class FileReadTool(BaseTool):
     def execute(self, filepath: str) -> ToolResult:
         """读取文件"""
         try:
-            # 安全检查：只允许访问指定目录
-            is_allowed = any(filepath.startswith(d) for d in self._allowed_dirs)
+            # 安全检查：只允许访问指定目录（resolve symlinks + is_relative_to）
+            real_path = os.path.realpath(filepath)
+            is_allowed = False
+            for d in self._allowed_dirs:
+                allowed_resolved = Path(d).resolve()
+                if Path(real_path).is_relative_to(allowed_resolved):
+                    is_allowed = True
+                    break
             if not is_allowed:
                 return ToolResult(success=False, error=f"不允许访问该路径: {filepath}，只允许访问: {self._allowed_dirs}")
-            
-            if not os.path.exists(filepath):
+
+            if not os.path.exists(real_path):
                 return ToolResult(success=False, error=f"文件不存在: {filepath}")
-            
-            with open(filepath, 'r', encoding='utf-8') as f:
+
+            with open(real_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-            
+
             return ToolResult(
                 success=True,
                 data={
-                    "filepath": filepath,
+                    "filepath": real_path,
                     "content": content,
                     "length": len(content)
                 }

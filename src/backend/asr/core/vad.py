@@ -104,8 +104,8 @@ class FsmnVAD:
         """
         waveform_list = self.load_data(audio_in, self.frontend.opts.frame_opts.samp_freq)
         waveform_nums = len(waveform_list)
-        is_final = kwargs.get("kwargs", False)
-        segments = [[]] * self.batch_size
+        is_final = kwargs.get("is_final", False)
+        segments = [[] for _ in range(self.batch_size)]
         
         for beg_idx in range(0, waveform_nums, self.batch_size):
             vad_scorer = E2EVadModel(self.vad_scorer_config)
@@ -123,10 +123,10 @@ class FsmnVAD:
                 for t_offset in range(0, int(feats_len), min(step, feats_len - t_offset)):
                     if t_offset + step >= feats_len - 1:
                         step = feats_len - t_offset
-                        is_final = True
+                        chunk_is_final = True
                     else:
-                        is_final = False
-                    
+                        chunk_is_final = False
+
                     feats_package = feats[:, t_offset:int(t_offset + step), :]
                     waveform_package = waveform[
                         :,
@@ -140,7 +140,7 @@ class FsmnVAD:
                     segments_part = vad_scorer(
                         scores,
                         waveform_package,
-                        is_final=is_final,
+                        is_final=chunk_is_final,
                         max_end_sil=self.max_end_sil,
                         online=False,
                     )
@@ -289,11 +289,11 @@ class FsmnVADOnline:
         
         feats, feats_len = self.extract_feat(frontend=frontend, waveforms=waveforms, is_final=is_final)
         segments = []
-        
+        vad_scorer = param_dict.get("vad_scorer", E2EVadModel(self.config["model_conf"]))
+
         if feats.size != 0:
             in_cache = param_dict.get("in_cache", list())
             in_cache = self.prepare_cache(in_cache)
-            vad_scorer = param_dict.get("vad_scorer", E2EVadModel(self.config["model_conf"]))
             
             try:
                 inputs = [feats]

@@ -45,21 +45,26 @@ class BaseBot(ABC):
         agent_id_prefix: str = "",
         max_idle_seconds: int = 3600,
         cleanup_interval_seconds: int = 300,
+        max_agents: int = 50,
     ):
         """
         Args:
             agent_id_prefix: Agent ID 前缀（如 "wework_", "ws_"）
             max_idle_seconds: Agent 最大空闲时间（秒），超过则自动清理
             cleanup_interval_seconds: 清理检查间隔（秒）
+            max_agents: Agent 池最大容量，超过时移除最久未活跃的 Agent
         """
         self.agent_id_prefix = agent_id_prefix
         self._max_idle_seconds = max_idle_seconds
         self._cleanup_interval = cleanup_interval_seconds
+        self._max_agents = max_agents
 
         # Agent 池: user_id -> Agent
         self.user_agents: Dict[str, Agent] = {}
         # 最后活跃时间: user_id -> timestamp
         self._last_active: Dict[str, float] = {}
+        # Agent 池锁（线程安全）
+        self._agent_lock = threading.Lock()
 
         # 后台清理线程
         self._cleanup_thread: Optional[threading.Thread] = None
@@ -92,14 +97,40 @@ class BaseBot(ABC):
         Returns:
             Agent 实例
         """
-        self._last_active[user_id] = time.time()
+        with self._agent_lock:
+            self._last_active[user_id] = time.time()
 
-        if user_id not in self.user_agents:
-            agent = self._create_agent(user_id)
-            self.user_agents[user_id] = agent
-            logger.info("为用户 %s 创建新的 Agent 会话", user_id)
+            if user_id not in self.user_agents:
+                # Enforce pool size limit — evict least recently used agent
+                if len(self.user_agents) >= self._max_agents:
+                    oldest_uid = min(
+                        self._last_active, key=self._last_active.get
+                    )
+                    self._evict_agent_unlocked(oldest_uid)
+                    logger.warning(
+                        "Agent pool full (%d), evicted user %s",
+                        self._max_agents, oldest_uid,
+                    )
 
-        return self.user_agents[user_id]
+                agent = self._create_agent(user_id)
+                self.user_agents[user_id] = agent
+                logger.info("为用户 %s 创建新的 Agent 会话", user_id)
+
+            return self.user_agents[user_id]
+
+    def _evict_agent_unlocked(self, user_id: str) -> bool:
+        """Evict an agent without acquiring the lock (caller must hold _agent_lock)."""
+        agent = self.user_agents.pop(user_id, None)
+        if agent is not None:
+            self._last_active.pop(user_id, None)
+            if hasattr(agent, 'end_chat'):
+                try:
+                    agent.end_chat()
+                except Exception:
+                    pass
+            logger.info("已清理用户 %s 的 Agent 会话", user_id)
+            return True
+        return False
 
     def remove_agent(self, user_id: str) -> bool:
         """
@@ -111,21 +142,18 @@ class BaseBot(ABC):
         Returns:
             是否成功移除
         """
-        if user_id in self.user_agents:
-            del self.user_agents[user_id]
-            self._last_active.pop(user_id, None)
-            logger.info("已清理用户 %s 的 Agent 会话", user_id)
-            return True
-        return False
+        with self._agent_lock:
+            return self._evict_agent_unlocked(user_id)
 
     def cleanup_inactive_agents(self):
         """清理超过最大空闲时间的 Agent"""
-        now = time.time()
-        inactive = [
-            uid
-            for uid, ts in self._last_active.items()
-            if now - ts > self._max_idle_seconds
-        ]
+        with self._agent_lock:
+            now = time.time()
+            inactive = [
+                uid
+                for uid, ts in self._last_active.items()
+                if now - ts > self._max_idle_seconds
+            ]
         for uid in inactive:
             self.remove_agent(uid)
 

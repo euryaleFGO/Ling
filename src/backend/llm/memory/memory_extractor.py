@@ -301,7 +301,12 @@ class MemoryExtractor:
             import re
 
             # 尝试从返回内容中提取 JSON
-            text = response if isinstance(response, str) else str(response)
+            if isinstance(response, str):
+                text = response
+            elif hasattr(response, 'choices') and response.choices:
+                text = response.choices[0].message.content
+            else:
+                text = str(response)
             json_match = re.search(r'\[.*\]', text, re.DOTALL)
             if json_match:
                 memories = json.loads(json_match.group(0))

@@ -2,14 +2,14 @@
 API 配置页面
 支持多配置方案管理
 """
-import sys
+import os
 
 import json
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QGroupBox, QPushButton, QComboBox,
-    QFormLayout, QMessageBox, QScrollArea, QCheckBox,
-    QInputDialog, QFrame, QDialog
+    QFormLayout, QMessageBox, QScrollArea,
+    QFrame, QDialog
 )
 from PyQt6.QtCore import Qt
 from pathlib import Path
@@ -259,32 +259,6 @@ class ApiPage(QWidget):
         llm_group.setLayout(llm_layout)
         layout.addWidget(llm_group)
 
-        # ── TTS 配置组 ──
-        tts_group = QGroupBox("TTS 语音合成")
-        tts_layout = QFormLayout()
-        tts_layout.setSpacing(14)
-        tts_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-
-        self.tts_enabled = QCheckBox("启用语音合成")
-        tts_layout.addRow("", self.tts_enabled)
-
-        self.tts_provider_combo = QComboBox()
-        self.tts_provider_combo.addItems(["Edge TTS (免费)", "Azure TTS", "自定义"])
-        tts_layout.addRow("TTS 提供商:", self.tts_provider_combo)
-
-        self.tts_voice_combo = QComboBox()
-        self.tts_voice_combo.addItems([
-            "zh-CN-XiaoxiaoNeural",
-            "zh-CN-XiaoyiNeural",
-            "zh-CN-YunjianNeural",
-            "zh-CN-YunxiNeural"
-        ])
-        self.tts_voice_combo.setEditable(True)
-        tts_layout.addRow("语音:", self.tts_voice_combo)
-
-        tts_group.setLayout(tts_layout)
-        layout.addWidget(tts_group)
-
         # ── 高级设置组 ──
         advanced_group = QGroupBox("高级设置")
         advanced_layout = QFormLayout()
@@ -463,28 +437,44 @@ class ApiPage(QWidget):
     def _apply_profile_to_config(self, profile: dict):
         """Apply profile to ConfigManager and save settings.json"""
         cfg = get_config_manager()
-        if profile.get("api_base"):
+        if "api_base" in profile:
             cfg.config.llm.base_url = profile["api_base"]
-        if profile.get("api_key"):
+        if "api_key" in profile:
             cfg.config.llm.api_key = profile["api_key"]
-        if profile.get("model"):
+        if "model" in profile:
             cfg.config.llm.model = profile["model"]
-        if profile.get("temperature"):
-            try:
-                cfg.config.llm.temperature = float(profile["temperature"])
-            except ValueError:
-                pass
-        if profile.get("max_tokens"):
-            try:
-                cfg.config.llm.max_tokens = int(profile["max_tokens"])
-            except ValueError:
-                pass
-        if profile.get("timeout"):
-            try:
-                cfg.config.llm.timeout = int(profile["timeout"])
-            except ValueError:
-                pass
+        if "temperature" in profile:
+            val = profile["temperature"]
+            if val:
+                try:
+                    cfg.config.llm.temperature = float(val)
+                except ValueError:
+                    pass
+            else:
+                cfg.config.llm.temperature = None
+        if "max_tokens" in profile:
+            val = profile["max_tokens"]
+            if val:
+                try:
+                    cfg.config.llm.max_tokens = int(val)
+                except ValueError:
+                    pass
+            else:
+                cfg.config.llm.max_tokens = None
+        if "timeout" in profile:
+            val = profile["timeout"]
+            if val:
+                try:
+                    cfg.config.llm.timeout = int(val)
+                except ValueError:
+                    pass
+            else:
+                cfg.config.llm.timeout = None
         cfg.save()
+        try:
+            self.window().notify_config_saved("api")
+        except Exception:
+            pass
 
     # ================================================================
     #  profiles.json 读写
@@ -505,6 +495,12 @@ class ApiPage(QWidget):
             self.profiles_path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.profiles_path, 'w', encoding='utf-8') as f:
                 json.dump(self._profiles, f, ensure_ascii=False, indent=2)
+            # Restrict file permissions to protect API keys (Fix 6.3)
+            try:
+                import stat
+                os.chmod(self.profiles_path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+            except (OSError, AttributeError):
+                pass  # Windows may not support chmod the same way
         except Exception as e:
             print(f"保存配置方案失败: {e}")
 
@@ -734,32 +730,52 @@ class ApiPage(QWidget):
     #  测试连接 / 重置
     # ================================================================
     def test_llm_connection(self):
-        try:
-            self.test_llm_btn.setText("测试中...")
-            self.test_llm_btn.setEnabled(False)
+        from PyQt6.QtCore import QThread, pyqtSignal
 
-            base_url = self.api_base_edit.text().strip() or "https://api.deepseek.com"
-            api_key  = self.api_key_edit.text().strip()
-            model    = self.model_combo.currentText().strip() or "deepseek-chat"
+        self.test_llm_btn.setText("测试中...")
+        self.test_llm_btn.setEnabled(False)
 
-            from backend.llm.api_infer import APIInfer
-            infer = APIInfer(url=base_url, api_key=api_key, model_name=model)
-            response = infer.infer(
-                messages=[{"role": "user", "content": "你好"}],
-                stream=False
-            )
+        base_url = self.api_base_edit.text().strip() or "https://api.deepseek.com"
+        api_key = self.api_key_edit.text().strip()
+        model = self.model_combo.currentText().strip() or "deepseek-chat"
 
-            if response and response.choices:
-                text = response.choices[0].message.content or ""
-                QMessageBox.information(
-                    self, "成功", f"连接成功！\n\n模型响应：{text[:100]}...")
-            else:
-                QMessageBox.warning(self, "失败", "连接失败，未收到响应")
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"连接失败：{e}")
-        finally:
+        class TestThread(QThread):
+            finished = pyqtSignal(bool, str)
+
+            def __init__(self, base_url, api_key, model):
+                super().__init__()
+                self._base_url = base_url
+                self._api_key = api_key
+                self._model = model
+
+            def run(self):
+                try:
+                    from backend.llm.api_infer import APIInfer
+                    infer = APIInfer(url=self._base_url, api_key=self._api_key, model_name=self._model)
+                    response = infer.infer(
+                        messages=[{"role": "user", "content": "你好"}],
+                        stream=False
+                    )
+                    if response and response.choices:
+                        text = response.choices[0].message.content or ""
+                        self.finished.emit(True, f"连接成功！模型响应：{text[:100]}...")
+                    else:
+                        self.finished.emit(False, "连接失败，未收到响应")
+                except Exception as e:
+                    self.finished.emit(False, str(e))
+
+        self._test_thread = TestThread(base_url, api_key, model)
+
+        def on_result(success, msg):
             self.test_llm_btn.setText("测试连接")
             self.test_llm_btn.setEnabled(True)
+            if success:
+                QMessageBox.information(self, "成功", msg)
+            else:
+                QMessageBox.critical(self, "错误", f"连接失败：{msg}")
+
+        self._test_thread.finished.connect(on_result)
+        self._test_thread.start()
 
     def reset_settings(self):
         reply = QMessageBox.question(
@@ -774,3 +790,17 @@ class ApiPage(QWidget):
             self.temperature_edit.clear()
             self.max_tokens_edit.clear()
             self.timeout_edit.clear()
+
+            # Persist defaults to ConfigManager
+            cfg = get_config_manager()
+            cfg.config.llm.base_url = ""
+            cfg.config.llm.api_key = ""
+            cfg.config.llm.model = "deepseek-chat"
+            cfg.config.llm.temperature = None
+            cfg.config.llm.max_tokens = None
+            cfg.config.llm.timeout = None
+            cfg.save()
+            try:
+                self.window().notify_config_saved("api")
+            except Exception:
+                pass

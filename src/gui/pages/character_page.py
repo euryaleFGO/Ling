@@ -16,6 +16,7 @@ class CharacterPage(QWidget):
     
     def __init__(self):
         super().__init__()
+        self._knowledge_dao = None
         self.init_ui()
         self.load_settings()
     
@@ -123,8 +124,10 @@ class CharacterPage(QWidget):
     def load_settings(self):
         """从数据库加载设置"""
         try:
-            from backend.llm.database import KnowledgeDAO
-            dao = KnowledgeDAO()
+            if self._knowledge_dao is None:
+                from backend.llm.database import KnowledgeDAO
+                self._knowledge_dao = KnowledgeDAO()
+            dao = self._knowledge_dao
             settings = dao.get_character_settings()
             
             if settings:
@@ -139,8 +142,10 @@ class CharacterPage(QWidget):
     def save_settings(self):
         """保存设置到数据库"""
         try:
-            from backend.llm.database import KnowledgeDAO
-            dao = KnowledgeDAO()
+            if self._knowledge_dao is None:
+                from backend.llm.database import KnowledgeDAO
+                self._knowledge_dao = KnowledgeDAO()
+            dao = self._knowledge_dao
             
             settings = {
                 'name': self.name_edit.text().strip(),

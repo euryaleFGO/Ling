@@ -184,8 +184,8 @@ class ParaformerStreaming:
 
         # 特征提取
         feats, feats_len = self.extract_feat(waveforms, is_final)
-        
-        if feats.shape[1] != 0:
+
+        if feats.ndim >= 2 and feats.shape[1] != 0:
             feats *= self.encoder_output_size ** 0.5
             cache = self.prepare_cache(cache)
             cache["is_final"] = is_final
@@ -284,6 +284,8 @@ class ParaformerStreaming:
             waveforms_lens[idx] = waveform.shape[-1]
 
         feats, feats_len = self.frontend.extract_fbank(waveforms, waveforms_lens, is_final)
+        if feats.ndim < 2 or feats.shape[0] == 0:
+            return np.empty(0, dtype=np.float32), None
         return feats.astype(np.float32), feats_len.astype(np.int32)
 
     def decode(self, am_scores: np.ndarray, token_nums: int) -> List[str]:

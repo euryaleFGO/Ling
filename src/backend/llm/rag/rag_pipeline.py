@@ -9,6 +9,7 @@ RAG Pipeline
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 import logging
+import threading
 import time
 
 from .query_processor import QueryProcessor, ProcessedQuery, QueryIntent
@@ -271,13 +272,22 @@ class RAGPipeline:
     def _set_cache(self, query: str, response: RAGResponse):
         """设置缓存"""
         self._cache[query] = (response, time.time())
-        
+
         # 清理过期缓存
         if len(self._cache) > 100:
             current_time = time.time()
-            expired = [k for k, (_, t) in self._cache.items() 
+            expired = [k for k, (_, t) in self._cache.items()
                       if current_time - t > self.config.cache_ttl]
             for k in expired:
+                del self._cache[k]
+
+        # 硬性大小限制：如果清理过期后仍然超过 200，移除最旧的条目
+        if len(self._cache) > 200:
+            sorted_keys = sorted(
+                self._cache.keys(),
+                key=lambda k: self._cache[k][1]  # timestamp
+            )
+            for k in sorted_keys[:len(self._cache) - 100]:
                 del self._cache[k]
     
     def add_memory(
@@ -333,6 +343,7 @@ class RAGPipeline:
 
 # 全局实例缓存
 _pipelines: Dict[str, RAGPipeline] = {}
+_pipelines_lock = threading.Lock()
 
 
 def get_rag_pipeline(
@@ -340,15 +351,17 @@ def get_rag_pipeline(
     config: Optional[RAGConfig] = None
 ) -> RAGPipeline:
     """
-    获取 RAG 流水线实例
-    
+    获取 RAG 流水线实例（线程安全）
+
     Args:
         user_id: 用户ID
         config: 配置
-        
+
     Returns:
         RAGPipeline 实例
     """
     if user_id not in _pipelines:
-        _pipelines[user_id] = RAGPipeline(user_id, config)
+        with _pipelines_lock:
+            if user_id not in _pipelines:
+                _pipelines[user_id] = RAGPipeline(user_id, config)
     return _pipelines[user_id]

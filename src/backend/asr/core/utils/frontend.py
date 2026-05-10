@@ -226,7 +226,6 @@ class WavFrontendOnline(WavFrontend):
         self, input: np.ndarray, input_lengths: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """提取 Fbank 特征（流式版本）"""
-        self.fbank_fn = knf.OnlineFbank(self.opts)
         batch_size = input.shape[0]
         
         if self.input_cache is None:
@@ -254,7 +253,9 @@ class WavFrontendOnline(WavFrontend):
                     waveform[:((frame_num - 1) * self.frame_shift_sample_length + self.frame_sample_length)]
                 )
                 waveform = waveform * (1 << 15)
-                
+
+                # Create a fresh fbank per batch item to avoid state contamination
+                self.fbank_fn = knf.OnlineFbank(self.opts)
                 self.fbank_fn.accept_waveform(self.opts.frame_opts.samp_freq, waveform.tolist())
                 frames = self.fbank_fn.num_frames_ready
                 mat = np.empty([frames, self.opts.mel_opts.num_bins])

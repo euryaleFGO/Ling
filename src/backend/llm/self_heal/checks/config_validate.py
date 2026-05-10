@@ -11,7 +11,7 @@ from .base_check import CheckResult, HealthCheck
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.parent.parent
 
 _DEFAULT_CONFIGS: List[str] = [
-    str(_PROJECT_ROOT / "config" / "interrupt_config.json"),
+    str(_PROJECT_ROOT / "config" / "settings.json"),
 ]
 
 

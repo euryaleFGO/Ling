@@ -32,6 +32,11 @@ class SessionScheduler:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._on_session_rotated: Optional[Callable] = None
+        self._loop = None  # asyncio event loop reference
+
+    def set_loop(self, loop):
+        """设置事件循环引用（由 AsyncConversationManager 调用）"""
+        self._loop = loop
 
     def start(self):
         """启动调度器"""
@@ -83,16 +88,24 @@ class SessionScheduler:
                 logger.warning("[会话调度] Agent 或 ContextManager 未设置")
                 return
 
+            # 如果 Agent 正在处理对话，延迟轮转
+            if hasattr(self._agent, '_chat_lock') and self._agent._chat_lock.locked():
+                logger.info("[会话调度] Agent 正在处理对话，延迟 60 秒后重试")
+                import schedule as schedule_lib
+                schedule_lib.every(60).seconds.do(self._rotate_session).tag('_deferred')
+                return
+
             logger.info("[会话调度] 开始会话轮转...")
 
             # 1. 结束当前会话，生成摘要
             previous_summary = None
             if self._context_manager.session_id:
                 try:
+                    old_session_id = self._context_manager.session_id
                     self._agent.end_chat(auto_summarize=True)
 
                     session = self._context_manager._conversation_dao.get_session(
-                        self._context_manager.session_id
+                        old_session_id
                     )
                     if session:
                         previous_summary = session.get("summary")
@@ -118,19 +131,29 @@ class SessionScheduler:
             if self._on_session_rotated:
                 self._on_session_rotated(new_session_id, previous_summary)
 
+            # 清理延迟重试的 job
+            try:
+                import schedule as schedule_lib
+                schedule_lib.clear('_deferred')
+            except Exception:
+                pass
+
         except Exception as e:
             logger.error(f"[会话调度] 会话轮转失败: {e}", exc_info=True)
 
 
 # 全局实例
 _session_scheduler: Optional[SessionScheduler] = None
+_session_scheduler_lock = threading.Lock()
 
 
 def get_session_scheduler(**kwargs) -> SessionScheduler:
-    """获取会话调度器实例"""
+    """获取会话调度器实例（线程安全）"""
     global _session_scheduler
     if _session_scheduler is None:
-        _session_scheduler = SessionScheduler(**kwargs)
+        with _session_scheduler_lock:
+            if _session_scheduler is None:
+                _session_scheduler = SessionScheduler(**kwargs)
     return _session_scheduler
 
 

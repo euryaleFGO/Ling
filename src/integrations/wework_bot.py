@@ -14,6 +14,7 @@ import time
 import hashlib
 import hmac
 import base64
+import struct
 from typing import Dict, Any, Optional
 from flask import Flask, request, jsonify
 import logging
@@ -30,15 +31,25 @@ logger = logging.getLogger(__name__)
 class WeWorkBot(BaseBot):
     """企业微信机器人"""
 
-    def __init__(self, webhook_key: str = None):
+    def __init__(self, webhook_key: str = None, encoding_aes_key: str = None):
         """
         初始化企业微信机器人
 
         Args:
             webhook_key: 企业微信机器人的 webhook key（用于验证签名）
+            encoding_aes_key: 消息加密密钥（43 位字符，用于 AES 解密）
         """
         super().__init__(agent_id_prefix="wework_")
         self.webhook_key = webhook_key or os.getenv("WEWORK_WEBHOOK_KEY", "")
+        self.encoding_aes_key = encoding_aes_key or os.getenv("WEWORK_ENCODING_AES_KEY", "")
+
+        # Pre-derive AES key from encoding_aes_key if provided
+        self._aes_key = None
+        if self.encoding_aes_key:
+            try:
+                self._aes_key = base64.b64decode(self.encoding_aes_key + "=")
+            except Exception as e:
+                logger.error(f"Failed to derive AES key from encoding_aes_key: {e}")
 
         # Flask 应用
         self.app = Flask(__name__)
@@ -59,10 +70,32 @@ class WeWorkBot(BaseBot):
                     return jsonify({"error": "Invalid signature"}), 401
                 
                 # 解析消息
-                data = request.get_json()
+                raw_data = request.get_data(as_text=True)
+                data = request.get_json(silent=True)
+
+                # Handle AES-encrypted messages
+                if not data and raw_data and "<Encrypt>" in raw_data:
+                    try:
+                        try:
+                            import defusedxml.ElementTree as ET
+                        except ImportError:
+                            import xml.etree.ElementTree as ET
+                            logger.warning("defusedxml not installed, using unsafe XML parser. Install with: pip install defusedxml")
+                        root = ET.fromstring(raw_data)
+                        encrypt_node = root.find("Encrypt")
+                        if encrypt_node is not None and encrypt_node.text:
+                            decrypted_xml = self._decrypt_message(encrypt_node.text)
+                            if decrypted_xml:
+                                data = json.loads(decrypted_xml)
+                            else:
+                                return jsonify({"error": "Decryption failed"}), 400
+                    except Exception as e:
+                        logger.error(f"Failed to process encrypted message: {e}")
+                        return jsonify({"error": "Decryption error"}), 400
+
                 if not data:
                     return jsonify({"error": "No data"}), 400
-                
+
                 logger.info(f"收到企业微信消息: {json.dumps(data, ensure_ascii=False)}")
                 
                 # 处理消息
@@ -86,27 +119,74 @@ class WeWorkBot(BaseBot):
             })
     
     def _verify_signature(self, request) -> bool:
-        """验证企业微信签名"""
+        """验证企业微信签名（SHA1）"""
         try:
-            # 企业微信使用 HMAC-SHA256 签名
-            signature = request.headers.get('X-Signature', '')
+            # 获取签名参数
+            signature = request.args.get('signature', '') or request.headers.get('X-Signature', '')
+            timestamp = request.args.get('timestamp', '') or request.headers.get('X-Timestamp', '')
+            nonce = request.args.get('nonce', '') or request.headers.get('X-Nonce', '')
+
             if not signature:
                 return False
-            
-            # 计算签名
-            body = request.get_data()
-            expected = hmac.new(
-                self.webhook_key.encode('utf-8'),
-                body,
-                hashlib.sha256
-            ).hexdigest()
-            
+
+            # 排序 token, timestamp, nonce，拼接后 SHA1
+            sorted_str = ''.join(sorted([self.webhook_key, timestamp, nonce]))
+            expected = hashlib.sha1(sorted_str.encode('utf-8')).hexdigest()
+
             return hmac.compare_digest(signature, expected)
-            
+
         except Exception as e:
             logger.error(f"签名验证异常: {e}")
             return False
     
+    def _decrypt_message(self, encrypt_content: str) -> Optional[str]:
+        """
+        Decrypt AES-CBC encrypted message from WeWork.
+
+        Args:
+            encrypt_content: Base64-encoded encrypted message
+
+        Returns:
+            Decrypted plaintext string, or None on failure
+        """
+        if not self._aes_key:
+            logger.error("No AES key configured, cannot decrypt message")
+            return None
+
+        try:
+            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+            from cryptography.hazmat.backends import default_backend
+
+            encrypted_data = base64.b64decode(encrypt_content)
+            iv = self._aes_key[:16]
+            cipher = Cipher(
+                algorithms.AES(self._aes_key),
+                modes.CBC(iv),
+                backend=default_backend()
+            )
+            decryptor = cipher.decryptor()
+            decrypted = decryptor.update(encrypted_data) + decryptor.finalize()
+
+            # Remove PKCS7 padding
+            pad_len = decrypted[-1]
+            if isinstance(pad_len, int):
+                decrypted = decrypted[:-pad_len]
+            else:
+                decrypted = decrypted[:-ord(pad_len)]
+
+            # decrypted format: 16 bytes random + 4 bytes msg_length (network order) + msg_content + corp_id
+            content = decrypted[16:]
+            msg_len = struct.unpack("!I", content[:4])[0]
+            msg_content = content[4:4 + msg_len].decode("utf-8")
+            return msg_content
+
+        except ImportError:
+            logger.error("cryptography package is required for AES decryption. Install it with: pip install cryptography")
+            return None
+        except Exception as e:
+            logger.error(f"AES decryption failed: {e}")
+            return None
+
     def _handle_message(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         处理企业微信消息

@@ -211,6 +211,9 @@ class DreamConsolidation:
             logger.warning("[梦境-Deep] 没有候选记忆")
             return {"phase": "deep", "promoted_count": 0}
         
+        # 预计算全局统计
+        self._precompute_deep_stats()
+
         # 计算完整评分
         for candidate in self.candidates:
             self._calculate_deep_signals(candidate)
@@ -344,17 +347,36 @@ class DreamConsolidation:
         days_old = (datetime.utcnow() - candidate.created_at).days
         candidate.recency = max(0, 1.0 - days_old / 30.0)  # 30 天衰减到 0
     
+    def _precompute_deep_stats(self):
+        """预计算全局统计信息，供 _calculate_deep_signals 使用。"""
+        # 每个 memory_type 出现在多少个不同 session 中
+        self._type_sessions: Dict[str, set] = defaultdict(set)
+        # 每个 memory_type 出现在多少个不同日期中
+        self._type_days: Dict[str, set] = defaultdict(set)
+        # 总 session 数
+        self._total_sessions: set = set()
+
+        for c in self.candidates:
+            self._type_sessions[c.memory_type].add(c.source_session_id)
+            self._total_sessions.add(c.source_session_id)
+            self._type_days[c.memory_type].add(c.created_at.date())
+
     def _calculate_deep_signals(self, candidate: MemoryCandidate):
-        """计算 Deep 阶段的完整信号"""
-        # 相关性：简化为固定值（实际应该基于检索质量）
-        candidate.relevance = 0.7
-        
-        # 查询多样性：简化为固定值
-        candidate.query_diversity = 0.5
-        
-        # 整合度：简化为固定值（实际应该统计多日重复）
-        candidate.consolidation = 0.3
-        
+        """计算 Deep 阶段的完整信号（数据驱动）"""
+        # 相关性：基于关键词密度——候选消息中命中的关键词越多，相关性越高
+        keywords = ["喜欢", "讨厌", "想要", "希望", "记住", "重要"]
+        hits = sum(1 for kw in keywords if kw in candidate.content)
+        candidate.relevance = min(1.0, hits / 3.0)  # 命中 3 个关键词即满分
+
+        # 查询多样性：该类型记忆出现在多少个不同 session 中（归一化）
+        type_session_count = len(self._type_sessions.get(candidate.memory_type, set()))
+        total = max(1, len(self._total_sessions))
+        candidate.query_diversity = min(1.0, type_session_count / total)
+
+        # 整合度：该类型记忆跨多少个不同日期出现（归一化，7 天满分）
+        type_day_count = len(self._type_days.get(candidate.memory_type, set()))
+        candidate.consolidation = min(1.0, type_day_count / 7.0)
+
         # 概念丰富度：基于内容长度和复杂度
         content_length = len(candidate.content)
         candidate.conceptual_richness = min(1.0, content_length / 200.0)

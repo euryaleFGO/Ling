@@ -87,13 +87,16 @@ class WebSocketServer:
                         pass
 
                 # 其他类型：转发给所有 *其他* 客户端（中继模式）
+                dead_clients = []
                 for other in self.clients.copy():
                     if other is not websocket:
                         try:
                             await other.send(message)
                         except Exception:
                             logger.debug(f"Failed to relay message to client {other.remote_address}")
-                            pass
+                            dead_clients.append(other)
+                for client in dead_clients:
+                    self.clients.discard(client)
         except Exception:
             logger.debug(f"WebSocket handler error for client {addr}")
             pass

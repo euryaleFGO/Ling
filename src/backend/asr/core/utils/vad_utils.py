@@ -444,11 +444,11 @@ class E2EVadModel:
                 for sil_pdf_id in self.sil_pdf_ids
             ]
             sum_score = sum(sil_pdf_scores)
-            noise_prob = math.log(sum_score) * self.vad_opts.speech_2_noise_ratio
+            noise_prob = math.log(max(sum_score, 1e-10)) * self.vad_opts.speech_2_noise_ratio
             total_score = 1.0
             sum_score = total_score - sum_score
-        
-        speech_prob = math.log(sum_score)
+
+        speech_prob = math.log(max(sum_score, 1e-10))
         
         if self.vad_opts.output_frame_probs:
             frame_prob = E2EVadFrameProb()
@@ -560,7 +560,9 @@ class E2EVadModel:
         """检测单帧"""
         tmp_cur_frm_state = FrameState.kFrameStateInvalid
         if cur_frm_state == FrameState.kFrameStateSpeech:
-            if math.fabs(1.0) > self.vad_opts.fe_prior_thres:
+            # TODO: Replace with actual per-frame prior feature value
+            # Original: if math.fabs(1.0) > self.vad_opts.fe_prior_thres:
+            if True:  # Always classify based on current frame state
                 tmp_cur_frm_state = FrameState.kFrameStateSpeech
             else:
                 tmp_cur_frm_state = FrameState.kFrameStateSil

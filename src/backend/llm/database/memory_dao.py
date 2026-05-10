@@ -5,6 +5,7 @@
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pymongo.collection import Collection
+import threading
 import uuid
 
 from .mongo_client import get_db
@@ -226,11 +227,14 @@ class MemoryDAO:
 
 # 全局实例
 _memory_dao: Optional[MemoryDAO] = None
+_memory_dao_lock = threading.Lock()
 
 
 def get_memory_dao() -> MemoryDAO:
-    """获取记忆DAO实例"""
+    """获取记忆DAO实例（线程安全）"""
     global _memory_dao
     if _memory_dao is None:
-        _memory_dao = MemoryDAO()
+        with _memory_dao_lock:
+            if _memory_dao is None:
+                _memory_dao = MemoryDAO()
     return _memory_dao

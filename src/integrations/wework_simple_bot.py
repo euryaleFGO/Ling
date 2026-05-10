@@ -9,6 +9,8 @@ import os
 import sys
 import json
 import time
+import hashlib
+import hmac
 import logging
 import requests
 from typing import Dict, Any, Optional
@@ -46,8 +48,20 @@ class WeWorkSimpleBot(BaseBot):
         self.access_token = None
         self.token_expires_at = None
 
+        self.verify_token = os.environ.get("WEWORK_VERIFY_TOKEN", "")
         logger.info("企业微信机器人初始化完成")
-    
+
+    def _verify_signature(self, token: str, timestamp: str, nonce: str, msg_signature: str) -> bool:
+        """Verify WeWork message signature"""
+        try:
+            sort_list = sorted([token, timestamp, nonce])
+            sort_str = ''.join(sort_list)
+            signature = hashlib.sha1(sort_str.encode('utf-8')).hexdigest()
+            return hmac.compare_digest(signature, msg_signature)
+        except Exception as e:
+            logger.error(f"Signature verification error: {e}")
+            return False
+
     def get_access_token(self) -> Optional[str]:
         """获取访问令牌"""
         # 检查现有 token 是否有效
@@ -186,24 +200,43 @@ def create_flask_app(corp_id: str, corp_secret: str, agent_id: str = "1000002"):
         """企业微信 Webhook 接口"""
         if request.method == 'GET':
             # URL 验证（企业微信会发送 GET 请求验证 URL）
+            msg_signature = request.args.get('msg_signature', '')
+            timestamp = request.args.get('timestamp', '')
+            nonce = request.args.get('nonce', '')
             echostr = request.args.get('echostr', '')
+
+            # Verify signature before returning echostr
+            if bot.verify_token and not bot._verify_signature(
+                bot.verify_token, timestamp, nonce, msg_signature
+            ):
+                return "Invalid signature", 403
             return echostr
-        
+
         elif request.method == 'POST':
             # 处理消息
             try:
+                # Verify signature on POST as well
+                msg_signature = request.args.get('msg_signature', '')
+                timestamp = request.args.get('timestamp', '')
+                nonce = request.args.get('nonce', '')
+
+                if bot.verify_token and not bot._verify_signature(
+                    bot.verify_token, timestamp, nonce, msg_signature
+                ):
+                    return jsonify({"errcode": -1, "errmsg": "Invalid signature"}), 403
+
                 # 获取 XML 数据并转换为字典
                 data = request.get_data()
-                
+
                 # 简单的 XML 解析（实际项目中建议使用专业的 XML 解析库）
                 message_dict = parse_wework_xml(data)
-                
+
                 if message_dict:
                     result = bot.handle_message(message_dict)
                     return jsonify(result)
                 else:
                     return jsonify({"errcode": 0, "errmsg": "ok"})
-                    
+
             except Exception as e:
                 logger.error(f"处理 Webhook 请求失败: {e}")
                 return jsonify({"errcode": -1, "errmsg": str(e)})
@@ -222,6 +255,10 @@ def create_flask_app(corp_id: str, corp_secret: str, agent_id: str = "1000002"):
     @app.route('/send', methods=['POST'])
     def send_message():
         """手动发送消息接口（测试用）"""
+        # API Key 认证
+        api_key = request.headers.get('X-API-Key')
+        if not api_key or api_key != os.environ.get('LIYING_BOT_API_KEY', ''):
+            return jsonify({"error": "Unauthorized"}), 401
         try:
             data = request.get_json()
             user_id = data.get('user_id')
@@ -249,8 +286,11 @@ def parse_wework_xml(xml_data: bytes) -> Dict[str, Any]:
     简化版实现，实际项目建议使用 xmltodict 或其他专业库
     """
     try:
-        import xml.etree.ElementTree as ET
-        
+        try:
+            import defusedxml.ElementTree as ET
+        except ImportError:
+            import xml.etree.ElementTree as ET
+
         # 解析 XML
         root = ET.fromstring(xml_data)
         

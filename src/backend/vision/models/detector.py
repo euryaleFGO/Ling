@@ -220,17 +220,20 @@ class ObjectDetector:
         
         conf = confidence if confidence is not None else self.confidence_threshold
         
-        # 获取图像尺寸
+        # 获取图像尺寸 (Fix 6.10: close PIL image to avoid resource leak)
         if isinstance(image, (str, Path)):
             pil_img = Image.open(image)
-            img_size = pil_img.size
+            try:
+                img_size = pil_img.size
+            finally:
+                pil_img.close()
         elif isinstance(image, Image.Image):
             img_size = image.size
         elif isinstance(image, np.ndarray):
             img_size = (image.shape[1], image.shape[0])
         else:
             raise TypeError(f"不支持的图像类型: {type(image)}")
-        
+
         # 运行检测
         results = self._model(
             image,
@@ -268,34 +271,60 @@ class ObjectDetector:
     ) -> Tuple[DetectionResult, np.ndarray]:
         """
         检测并在图像上绘制结果
-        
+
         Args:
             image: 图像输入
             confidence: 置信度阈值
             output_path: 输出路径（可选）
-            
+
         Returns:
             (检测结果, 绘制后的图像)
         """
         self._load_model()
-        
+
         conf = confidence if confidence is not None else self.confidence_threshold
-        
+
+        # 获取图像尺寸
+        if isinstance(image, (str, Path)):
+            pil_img = Image.open(image)
+            img_size = pil_img.size
+            pil_img.close()
+        elif isinstance(image, Image.Image):
+            img_size = image.size
+        elif isinstance(image, np.ndarray):
+            img_size = (image.shape[1], image.shape[0])
+        else:
+            raise TypeError(f"不支持的图像类型: {type(image)}")
+
         results = self._model(
             image,
             conf=conf,
             verbose=False
         )
-        
+
         # 获取绘制后的图像
         annotated = results[0].plot()
-        
+
         if output_path:
             Image.fromarray(annotated).save(output_path)
-        
-        # 解析检测结果
-        result = self.detect(image, confidence)
-        
+
+        # 从已有 results 解析检测结果（避免重复推理）
+        detections = []
+        if len(results) > 0 and results[0].boxes is not None:
+            boxes = results[0].boxes
+            for i in range(len(boxes)):
+                bbox = boxes.xyxy[i].cpu().numpy().astype(int)
+                conf_score = float(boxes.conf[i].cpu().numpy())
+                cls_id = int(boxes.cls[i].cpu().numpy())
+                label = self._model.names[cls_id]
+                detections.append(Detection(
+                    label=label,
+                    confidence=conf_score,
+                    bbox=tuple(bbox)
+                ))
+
+        result = DetectionResult(detections=detections, image_size=img_size)
+
         return result, annotated
 
     def unload(self):

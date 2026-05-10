@@ -5,7 +5,6 @@
 """
 
 import logging
-import schedule
 import time
 import threading
 from datetime import datetime
@@ -49,10 +48,7 @@ class DreamScheduler:
             return
         
         logger.info(f"[梦境调度] 启动调度器 (时间: {self.schedule_time})")
-        
-        # 设置定时任务
-        schedule.every().day.at(self.schedule_time).do(self._run_consolidation)
-        
+
         # 在后台线程运行
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run_scheduler, daemon=True)
@@ -73,8 +69,17 @@ class DreamScheduler:
     
     def _run_scheduler(self):
         """调度器主循环"""
+        try:
+            import schedule as schedule_lib
+        except ImportError:
+            logger.error("[梦境调度] 需要安装 schedule 库: pip install schedule")
+            return
+
+        # 设置定时任务
+        schedule_lib.every().day.at(self.schedule_time).do(self._run_consolidation)
+
         while not self._stop_event.is_set():
-            schedule.run_pending()
+            schedule_lib.run_pending()
             time.sleep(60)  # 每分钟检查一次
     
     def _run_consolidation(self):
@@ -103,16 +108,19 @@ class DreamScheduler:
 
 # 全局调度器实例
 _scheduler: Optional[DreamScheduler] = None
+_scheduler_lock = threading.Lock()
 
 
 def get_dream_scheduler(
     user_id: str = "default_user",
     **kwargs
 ) -> DreamScheduler:
-    """获取梦境调度器实例"""
+    """获取梦境调度器实例（线程安全）"""
     global _scheduler
     if _scheduler is None:
-        _scheduler = DreamScheduler(user_id=user_id, **kwargs)
+        with _scheduler_lock:
+            if _scheduler is None:
+                _scheduler = DreamScheduler(user_id=user_id, **kwargs)
     return _scheduler
 
 

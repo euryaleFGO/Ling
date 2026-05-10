@@ -5,6 +5,7 @@
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pymongo.collection import Collection
+import threading
 import uuid
 
 from .mongo_client import get_db
@@ -394,11 +395,14 @@ class KnowledgeDAO:
 
 # 全局实例
 _knowledge_dao: Optional[KnowledgeDAO] = None
+_knowledge_dao_lock = threading.Lock()
 
 
 def get_knowledge_dao() -> KnowledgeDAO:
-    """获取知识库DAO实例"""
+    """获取知识库DAO实例（线程安全）"""
     global _knowledge_dao
     if _knowledge_dao is None:
-        _knowledge_dao = KnowledgeDAO()
+        with _knowledge_dao_lock:
+            if _knowledge_dao is None:
+                _knowledge_dao = KnowledgeDAO()
     return _knowledge_dao

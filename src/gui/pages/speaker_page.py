@@ -20,7 +20,7 @@ import sys
 logger = logging.getLogger(__name__)
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -37,6 +37,29 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QFormLayout,
 )
+
+
+class _TTSLoadThread(QThread):
+    """Background thread to load TTS model without blocking GUI (Fix 6.5)"""
+    loaded = pyqtSignal(object)
+    error = pyqtSignal(str)
+
+    def __init__(self, model_dir):
+        super().__init__()
+        self._model_dir = model_dir
+
+    def run(self):
+        try:
+            if not self._model_dir.exists():
+                raise FileNotFoundError(f"模型目录不存在：{self._model_dir}")
+            from engine import CosyvoiceRealTimeTTS  # type: ignore
+            tts = CosyvoiceRealTimeTTS(
+                str(self._model_dir), reference_audio_path=None,
+                load_jit=False, load_trt=False
+            )
+            self.loaded.emit(tts)
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 class SpeakerPage(QWidget):
@@ -182,6 +205,19 @@ class SpeakerPage(QWidget):
         if self._tts is not None and hasattr(self._tts, "cosyvoice") and hasattr(self._tts.cosyvoice, "frontend"):
             self._tts.cosyvoice.frontend.spk2info = spk2info
 
+    # ---------------- TTS lifecycle ----------------
+    def _release_tts(self):
+        """Release TTS instance to free GPU memory (Fix 6.8)"""
+        if self._tts is not None:
+            del self._tts
+            self._tts = None
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+
     # ---------------- actions ----------------
     def refresh_speakers(self):
         try:
@@ -266,12 +302,18 @@ class SpeakerPage(QWidget):
 
     def register_speaker(self):
         spk_id = self.new_spk_name.text().strip()
+
+        # Input validation (Fix 6.9)
+        if not spk_id or len(spk_id) > 64:
+            QMessageBox.warning(self, "错误", "说话人名称必须为 1-64 个字符")
+            return
+        if any(c in spk_id for c in '/\\:\0'):
+            QMessageBox.warning(self, "错误", "说话人名称包含非法字符")
+            return
+
         audio_path = self.audio_path_edit.text().strip()
         prompt_text = self.prompt_text.toPlainText().strip()
 
-        if not spk_id:
-            QMessageBox.information(self, "提示", "请填写“说话人名称(ID)”。")
-            return
         if not audio_path or not Path(audio_path).exists():
             QMessageBox.information(self, "提示", "请先选择有效的参考音频文件。")
             return
@@ -279,8 +321,34 @@ class SpeakerPage(QWidget):
             QMessageBox.information(self, "提示", "请填写参考音频对应的文本。")
             return
 
+        # If TTS is already loaded, proceed directly; otherwise load in background thread (Fix 6.5)
+        if self._tts is not None:
+            self._do_register(spk_id, audio_path, prompt_text)
+        else:
+            self.register_btn.setEnabled(False)
+            self.register_btn.setText("加载模型中...")
+            self._tts_load_thread = _TTSLoadThread(self.model_dir)
+            self._tts_load_thread.loaded.connect(
+                lambda tts: self._on_tts_loaded_for_register(tts, spk_id, audio_path, prompt_text)
+            )
+            self._tts_load_thread.error.connect(self._on_tts_load_error)
+            self._tts_load_thread.start()
+
+    def _on_tts_loaded_for_register(self, tts, spk_id, audio_path, prompt_text):
+        """Callback when TTS model finishes loading in background thread"""
+        self._tts = tts
+        self._do_register(spk_id, audio_path, prompt_text)
+
+    def _on_tts_load_error(self, error_msg):
+        """Callback when TTS model loading fails in background thread"""
+        self.register_btn.setEnabled(True)
+        self.register_btn.setText("登记说话人")
+        QMessageBox.critical(self, "错误", f"TTS 模型加载失败：{error_msg}")
+
+    def _do_register(self, spk_id, audio_path, prompt_text):
+        """Perform the actual speaker registration (TTS must be loaded)"""
         try:
-            tts = self._ensure_tts()
+            tts = self._tts
 
             # 统一加载为 16k（cosyvoice 要求）
             prompt_speech_16k = tts.load_wav_func(audio_path, 16000)
@@ -294,15 +362,16 @@ class SpeakerPage(QWidget):
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 )
                 if reply != QMessageBox.StandardButton.Yes:
+                    self.register_btn.setEnabled(True)
+                    self.register_btn.setText("登记说话人")
                     return
 
             self.register_btn.setEnabled(False)
             self.register_btn.setText("登记中...")
-            QApplication = None
+
+            # Fix 6.4: Use QApplication directly without shadowing
             try:
-                # 这里避免 UI 卡死：简单处理一次事件循环
-                from PyQt6.QtWidgets import QApplication as _QApp
-                QApplication = _QApp
+                from PyQt6.QtWidgets import QApplication
                 QApplication.processEvents()
             except Exception:
                 logger.debug("Failed to process Qt events during speaker registration")

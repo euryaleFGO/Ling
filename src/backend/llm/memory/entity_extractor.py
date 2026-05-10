@@ -12,6 +12,7 @@ from typing import Optional, List, Dict, Any, Tuple
 import logging
 import json
 import re
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -295,13 +296,18 @@ class EntityRelationExtractor:
 
 # 全局实例
 _extractor: Optional[EntityRelationExtractor] = None
+_extractor_lock = threading.Lock()
 
 
 def get_entity_extractor(llm_client=None) -> EntityRelationExtractor:
-    """获取实体关系提取器实例"""
+    """获取实体关系提取器实例（线程安全）"""
     global _extractor
     if _extractor is None:
-        _extractor = EntityRelationExtractor(llm_client)
+        with _extractor_lock:
+            if _extractor is None:
+                _extractor = EntityRelationExtractor(llm_client)
     elif llm_client and _extractor._llm_client is None:
-        _extractor.set_llm_client(llm_client)
+        with _extractor_lock:
+            if _extractor._llm_client is None:
+                _extractor.set_llm_client(llm_client)
     return _extractor

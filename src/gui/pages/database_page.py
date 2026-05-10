@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QTextEdit, QFrame, QSizePolicy, QSpacerItem
 )
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QColor
 from datetime import datetime
 
 
@@ -25,6 +25,8 @@ class DatabasePage(QWidget):
     def __init__(self):
         super().__init__()
         self.current_session_id = None
+        self.all_sessions = []
+        self.all_memories = []
         self.init_ui()
         self.load_data()
     
@@ -243,19 +245,30 @@ class DatabasePage(QWidget):
         mongo_layout.setSpacing(12)
         mongo_layout.setContentsMargins(15, 20, 15, 15)
         
-        self.mongo_host = QLineEdit("localhost")
-        self.mongo_port = QLineEdit("27017")
-        self.mongo_db = QLineEdit("liying_db")
+        self.mongo_host = QLineEdit()
+        self.mongo_host.setPlaceholderText("localhost")
+        self.mongo_port = QLineEdit()
+        self.mongo_port.setPlaceholderText("27017")
+        self.mongo_db = QLineEdit()
+        self.mongo_db.setPlaceholderText("liying_db")
         
         mongo_layout.addRow("主机:", self.mongo_host)
         mongo_layout.addRow("端口:", self.mongo_port)
         mongo_layout.addRow("数据库:", self.mongo_db)
         
+        btn_row = QHBoxLayout()
         test_btn = QPushButton("测试连接")
         test_btn.setProperty("class", "secondary")
         test_btn.setMaximumWidth(120)
         test_btn.clicked.connect(self.test_connection)
-        mongo_layout.addRow("", test_btn)
+        save_btn = QPushButton("保存 MongoDB 配置")
+        save_btn.setProperty("class", "primary")
+        save_btn.setMaximumWidth(160)
+        save_btn.clicked.connect(self.save_mongo_config)
+        btn_row.addWidget(test_btn)
+        btn_row.addWidget(save_btn)
+        btn_row.addStretch()
+        mongo_layout.addRow("", btn_row)
         
         mongo_group.setLayout(mongo_layout)
         layout.addWidget(mongo_group)
@@ -330,10 +343,51 @@ class DatabasePage(QWidget):
     
     def load_data(self):
         """加载所有数据"""
+        self.load_mongo_config()
         self.check_connection()
         self.load_conversations()
         self.load_memories()
         self.load_stats()
+
+    def load_mongo_config(self):
+        """从 ConfigManager 加载 MongoDB 配置到 UI 字段"""
+        try:
+            from core.config_manager import get_config_manager
+            cfg = get_config_manager().config
+            uri = cfg.mongodb.uri or "mongodb://localhost:27017"
+            # 解析 host:port
+            host, port = "localhost", "27017"
+            try:
+                tail = uri.split("://", 1)[1] if "://" in uri else uri
+                host_port = tail.split("/", 1)[0]
+                if ":" in host_port:
+                    host, port_str = host_port.rsplit(":", 1)
+                    port = port_str
+                else:
+                    host = host_port
+            except Exception:
+                pass
+            self.mongo_host.setText(host)
+            self.mongo_port.setText(str(port))
+            self.mongo_db.setText(cfg.mongodb.db_name or "liying_db")
+        except Exception as e:
+            logger.warning("Failed to load MongoDB config from ConfigManager: %s", e)
+
+    def save_mongo_config(self):
+        """将 UI 中的 MongoDB 配置保存到 ConfigManager"""
+        try:
+            from core.config_manager import get_config_manager
+            cfg = get_config_manager()
+            host = (self.mongo_host.text() or "localhost").strip()
+            port = (self.mongo_port.text() or "27017").strip()
+            db_name = (self.mongo_db.text() or "liying_db").strip()
+            uri = f"mongodb://{host}:{port}"
+            cfg.config.mongodb.uri = uri
+            cfg.config.mongodb.db_name = db_name
+            cfg.save()
+            QMessageBox.information(self, "成功", f"MongoDB 配置已保存\nURI: {uri}\n数据库: {db_name}")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"保存失败: {e}")
     
     def check_connection(self):
         """检查数据库连接"""
@@ -352,9 +406,15 @@ class DatabasePage(QWidget):
         try:
             from backend.llm.database import get_db
             db = get_db()
-            
+
             conv_count = db.conversations.count_documents({})
-            msg_count = sum(len(c.get('messages', [])) for c in db.conversations.find())
+            # Use MongoDB aggregation instead of iterating all documents in Python (Fix 6.6)
+            msg_pipeline = [
+                {"$project": {"msg_count": {"$size": {"$ifNull": ["$messages", []]}}}},
+                {"$group": {"_id": None, "total_msgs": {"$sum": "$msg_count"}}}
+            ]
+            msg_result = list(db.conversations.aggregate(msg_pipeline))
+            msg_count = msg_result[0]["total_msgs"] if msg_result else 0
             mem_count = db.long_term_memory.count_documents({})
             
             self.stats_label.setText(
@@ -463,7 +523,7 @@ class DatabasePage(QWidget):
             mem_type = mem.get('memory_type', 'unknown')
             type_item = QTableWidgetItem(mem_type)
             color = type_colors.get(mem_type, '#cdd6f4')
-            type_item.setForeground(Qt.GlobalColor.white)
+            type_item.setForeground(QColor(color))
             self.memory_table.setItem(i, 0, type_item)
             
             # 内容

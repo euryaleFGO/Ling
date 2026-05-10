@@ -16,6 +16,7 @@ from typing import Optional, List, Dict, Any, Set, Tuple
 from datetime import datetime
 import logging
 import json
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -351,27 +352,37 @@ class KnowledgeGraph:
         return None
     
     def query_by_subject(self, subject: str) -> List[Triple]:
-        """查询主体的所有关系"""
+        """查询主体的所有关系（去重）"""
         results = []
+        seen_indices: Set[int] = set()
         subject_lower = subject.lower()
-        for triple in self._triples:
+        for i, triple in enumerate(self._triples):
+            if i in seen_indices:
+                continue
             if triple.subject.name.lower() == subject_lower:
                 results.append(triple)
+                seen_indices.add(i)
             # 也检查别名
-            if subject_lower in [a.lower() for a in triple.subject.aliases]:
+            elif subject_lower in [a.lower() for a in triple.subject.aliases]:
                 results.append(triple)
+                seen_indices.add(i)
         return results
-    
+
     def query_by_object(self, obj: str) -> List[Triple]:
-        """查询客体的所有关系"""
+        """查询客体的所有关系（去重）"""
         results = []
+        seen_indices: Set[int] = set()
         obj_lower = obj.lower()
-        for triple in self._triples:
+        for i, triple in enumerate(self._triples):
+            if i in seen_indices:
+                continue
             if triple.obj.name.lower() == obj_lower:
                 results.append(triple)
+                seen_indices.add(i)
             # 也检查别名
-            if obj_lower in [a.lower() for a in triple.obj.aliases]:
+            elif obj_lower in [a.lower() for a in triple.obj.aliases]:
                 results.append(triple)
+                seen_indices.add(i)
         return results
     
     def query_by_relation(self, relation: str) -> List[Triple]:
@@ -544,10 +555,13 @@ class KnowledgeGraph:
 
 # 全局实例缓存
 _knowledge_graphs: Dict[str, KnowledgeGraph] = {}
+_kg_lock = threading.Lock()
 
 
 def get_knowledge_graph(user_id: str = "default_user") -> KnowledgeGraph:
-    """获取知识图谱实例"""
+    """获取知识图谱实例（线程安全）"""
     if user_id not in _knowledge_graphs:
-        _knowledge_graphs[user_id] = KnowledgeGraph(user_id)
+        with _kg_lock:
+            if user_id not in _knowledge_graphs:
+                _knowledge_graphs[user_id] = KnowledgeGraph(user_id)
     return _knowledge_graphs[user_id]

@@ -7,6 +7,7 @@ TTS 缓存模块
 
 import hashlib
 import json
+import threading
 import base64
 from collections import OrderedDict
 from pathlib import Path
@@ -38,6 +39,7 @@ class TTSCache:
         self.enable_disk_cache = enable_disk_cache
         
         # 内存缓存（LRU）
+        self._lock = threading.Lock()
         self._memory_cache: OrderedDict[str, Tuple[np.ndarray, int, dict]] = OrderedDict()
         
         # 统计信息
@@ -94,15 +96,16 @@ class TTSCache:
         """
         self._total_requests += 1
         key = self._generate_key(text, spk_id, **kwargs)
-        
-        # 先查内存缓存
-        if key in self._memory_cache:
-            self._hits += 1
-            # 移到最后（LRU）
-            self._memory_cache.move_to_end(key)
-            log.debug(f"[TTS 缓存] 内存命中: {text[:20]}...")
-            return self._memory_cache[key]
-        
+
+        with self._lock:
+            # 先查内存缓存
+            if key in self._memory_cache:
+                self._hits += 1
+                # 移到最后（LRU）
+                self._memory_cache.move_to_end(key)
+                log.debug(f"[TTS 缓存] 内存命中: {text[:20]}...")
+                return self._memory_cache[key]
+
         # 再查磁盘缓存
         if self.enable_disk_cache and self.cache_dir:
             cache_file = self.cache_dir / f"{key}.json"
@@ -119,13 +122,14 @@ class TTSCache:
                     data = (audio_array, cache_data["sample_rate"], cache_data.get("metadata", {}))
 
                     # 加载到内存缓存
-                    self._put_memory(key, data)
+                    with self._lock:
+                        self._put_memory(key, data)
                     self._hits += 1
                     log.debug(f"[TTS 缓存] 磁盘命中: {text[:20]}...")
                     return data
                 except Exception as e:
                     log.warn(f"[TTS 缓存] 磁盘缓存加载失败: {e}")
-        
+
         # 未命中
         self._misses += 1
         log.debug(f"[TTS 缓存] 未命中: {text[:20]}...")
@@ -153,9 +157,10 @@ class TTSCache:
         """
         key = self._generate_key(text, spk_id, **kwargs)
         data = (audio, sample_rate, metadata or {})
-        
+
         # 放入内存缓存
-        self._put_memory(key, data)
+        with self._lock:
+            self._put_memory(key, data)
         
         # 放入磁盘缓存
         if self.enable_disk_cache and self.cache_dir:
@@ -254,7 +259,8 @@ class TTSCache:
     
     def clear(self):
         """清空缓存"""
-        self._memory_cache.clear()
+        with self._lock:
+            self._memory_cache.clear()
         self._hits = 0
         self._misses = 0
         self._total_requests = 0

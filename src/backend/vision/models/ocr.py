@@ -166,12 +166,15 @@ class TextRecognizer:
         """
         self._load_model()
         
-        # 转换图像格式
+        # 转换图像格式 (Fix 6.11: close PIL image to avoid resource leak)
         if isinstance(image, (str, Path)):
             image_path = str(image)
             pil_img = Image.open(image)
-            img_size = pil_img.size
-            img_array = np.array(pil_img)
+            try:
+                img_size = pil_img.size
+                img_array = np.array(pil_img)
+            finally:
+                pil_img.close()
         elif isinstance(image, Image.Image):
             img_size = image.size
             img_array = np.array(image)

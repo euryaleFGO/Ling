@@ -14,6 +14,8 @@ import time
 from typing import Optional, Tuple, Generator
 from dataclasses import dataclass
 
+from core.audio_types import StreamingChunk
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -207,15 +209,21 @@ class RemoteTTSClient:
             segment_idx = 0
             poll_count = 0
             first_chunk_deadline = time.time() + 120  # 首段最多等 120 秒
+            overall_deadline = time.time() + 300       # 全局超时 5 分钟
             dequeue_timeout = 10  # 单次轮询等待（秒），避免长时间无提示
             expected_next = 1  # 期望收到的下一个段编号
             received_count = 0
+            total_segments = 0
             last_log_time = time.time()
 
             while True:
                 try:
                     if segment_idx == 0 and time.time() > first_chunk_deadline:
                         log.error("[远程TTS] 首段音频等待超时（120s），请检查服务端负载或网络")
+                        break
+
+                    if time.time() > overall_deadline:
+                        log.error("[远程TTS] 整体超时（300s），终止轮询")
                         break
 
                     # 每 3 秒打印一次等待状态
@@ -288,7 +296,7 @@ class RemoteTTSClient:
 
                     wav_bytes = resp.content
                     audio = self._wav_bytes_to_array(wav_bytes)
-                    yield (audio, segment_idx, total_segments, visemes)
+                    yield StreamingChunk(audio, segment_idx, total_segments, visemes)
 
                 except requests.Timeout:
                     log.tts("[远程TTS] 等待音频超时，继续轮询...")
@@ -305,18 +313,19 @@ class RemoteTTSClient:
             log.error(f"[远程TTS] 流式错误: {e}")
             import traceback
             traceback.print_exc()
-            
-        except Exception as e:
-            log.error(f"[远程TTS] 流式错误: {e}")
-            import traceback
-            traceback.print_exc()
+            yield StreamingChunk(None, -1, 0, None)
     
     def _wav_bytes_to_array(self, wav_bytes: bytes) -> np.ndarray:
         """将 WAV 字节转换为 numpy 数组"""
-        with io.BytesIO(wav_bytes) as f:
-            with wave.open(f, 'rb') as wf:
-                frames = wf.readframes(wf.getnframes())
-                audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        with wave.open(io.BytesIO(wav_bytes), 'rb') as wf:
+            sampwidth = wf.getsampwidth()
+            raw = wf.readframes(wf.getnframes())
+        if sampwidth == 2:
+            audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        elif sampwidth == 4:
+            audio = np.frombuffer(raw, dtype=np.float32)
+        else:
+            audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
         return audio
     
     def text_to_speech(self, text: str, use_clone: bool = True, output_file: str = None) -> bool:

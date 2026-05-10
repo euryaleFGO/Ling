@@ -36,6 +36,28 @@ class TerminalExecuteTool(BaseTool):
             "如果命令包含删除操作，将弹窗要求输入密钥确认。"
         )
 
+    DANGEROUS_COMMANDS = {
+        'powershell', 'pwsh', 'reg', 'format', 'net', 'netsh',
+        'certutil', 'taskkill', 'sc', 'wmic', 'rd',
+    }
+    DANGEROUS_PATTERNS = [
+        r'\bpowershell\b', r'\bpwsh\b', r'\breg\s+delete\b',
+        r'\bformat\s+[a-zA-Z]:', r'\bnet\s+user\b', r'\bnetsh\b',
+        r'\bcertutil\b', r'\btaskkill\b',
+        r'\bsc\s+(create|delete|stop|config)\b', r'\bwmic\b',
+    ]
+
+    def _is_dangerous_command(self, command: str) -> bool:
+        """检测命令是否包含危险操作。"""
+        cmd = (command or "").strip().lower()
+        if not cmd:
+            return False
+        # 从命令行第一个 token 提取程序名
+        first_token = cmd.split()[0] if cmd.split() else ""
+        if first_token in self.DANGEROUS_COMMANDS:
+            return True
+        return any(re.search(p, cmd, flags=re.IGNORECASE) for p in self.DANGEROUS_PATTERNS)
+
     def _is_delete_command(self, command: str) -> bool:
         """检测命令是否包含删除行为。"""
         cmd = (command or "").strip().lower()
@@ -52,7 +74,7 @@ class TerminalExecuteTool(BaseTool):
             r"\brm\b",             # rm (Unix)
             r"\brm-rf\b",          # rm -rf
             r"\brm -",            # rm -rf, rm -r, etc.
-            r"/d\s",              # cmd /d (disable autorun)
+            r"\bcmd\s+/d\b",       # cmd /d (disable autorun)
             r"deltree\b",         # deltree (old Windows)
             r"format\b.*\/q",     # format /q (quick format)
             r"shift\s+\+",        # shift + (秘密删除)
@@ -240,6 +262,27 @@ class TerminalExecuteTool(BaseTool):
             if not resolved.exists() or not resolved.is_dir():
                 return ToolResult(success=False, error=f"cwd 不存在或不是目录: {cwd}")
             run_cwd = str(resolved)
+
+        # 安全加固：输出重定向检测（允许管道 |，禁止写入文件的重定向）
+        # Also detect CMD escape char ^ used to bypass: ^>, ^>>
+        import re as _re
+        if _re.search(r'\^?>|>>', command):
+            return ToolResult(success=False, error="安全限制：不允许输出重定向到文件")
+
+        # 安全加固：命令链接检测（& && ||）—— 拆分后逐段验证
+        import shlex
+        # Split on command chaining operators (not inside quotes)
+        chain_segments = _re.split(r'\s*(?:&&|\|\||&)\s*', command)
+        for segment in chain_segments:
+            segment = segment.strip()
+            if not segment:
+                continue
+            if self._is_dangerous_command(segment):
+                return ToolResult(success=False, error="安全限制：不允许通过命令链接执行危险命令")
+
+        # 安全加固：危险命令检测（对整体命令再检查一次）
+        if self._is_dangerous_command(command):
+            return ToolResult(success=False, error="安全限制：不允许执行危险命令")
 
         try:
             completed = subprocess.run(

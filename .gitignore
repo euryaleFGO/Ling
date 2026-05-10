@@ -138,7 +138,7 @@ docs/
 config/llm_profiles.json
 config/*_keys*.json
 config/*.json
-!config/settings.json
+!config/settings.json.example
 !config/api_keys.example.txt
 
 # Git

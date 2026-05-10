@@ -28,6 +28,7 @@ from typing import List, Optional, Dict, Any
 import base64
 import numpy as np
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 
 # ---- 自动检测 GPU ----
 
@@ -85,7 +86,8 @@ class ASREngine:
             Path.home() / ".cache" / "funasr" / name,
         ]
         for p in search:
-            if p.exists():
+            # 目录必须存在且包含模型文件（model.pt 或 config.yaml）
+            if p.exists() and (p / "model.pt").exists():
                 return str(p)
         return name  # 返回模型名，FunASR 会自动下载
 
@@ -123,7 +125,7 @@ class ASREngine:
         self._model_offline = AutoModel(**kwargs)
         logging.info("[ASR] Offline model loaded")
 
-    def recognize_audio(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
+    def recognize_audio(self, audio: np.ndarray, sample_rate: int = 16000, hotwords: str = "") -> str:
         """离线识别整段音频"""
         self._load_models()
         self._load_offline_model()
@@ -133,7 +135,10 @@ class ASREngine:
         if sample_rate and sample_rate != self.config.sample_rate:
             import librosa
             audio = librosa.resample(audio, orig_sr=sample_rate, target_sr=self.config.sample_rate)
-        res = self._model_offline.generate(input=audio)
+        kwargs = {"input": audio}
+        if hotwords:
+            kwargs["hotword"] = hotwords
+        res = self._model_offline.generate(**kwargs)
         if res and len(res) > 0 and "text" in res[0]:
             return res[0]["text"]
         return ""
@@ -221,6 +226,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 app = Flask(__name__)
+CORS(app)
 
 # 全局引擎（懒加载）
 _engine: Optional[ASREngine] = None
@@ -271,10 +277,11 @@ def asr_recognize():
 
         wav_bytes = base64.b64decode(audio_b64)
         audio, sr = wav_bytes_to_array(wav_bytes)
+        hotwords = data.get("hotwords", "")
 
         t0 = time.time()
         engine = get_engine()
-        text = engine.recognize_audio(audio, sr)
+        text = engine.recognize_audio(audio, sr, hotwords=hotwords)
         dt = time.time() - t0
 
         log.info(f"[ASR] {dt:.2f}s -> {text[:80]}")
