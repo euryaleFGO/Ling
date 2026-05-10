@@ -62,9 +62,14 @@ class SpeakerRecognitionMixin:
                 if name and len(name) >= 1 and not name.startswith('是'):
                     return name, rest
 
-        # Fallback: if text is short (likely just a name), use it directly
+        # Fallback: only if text is short AND looks like a Chinese name
+        # (no ASR noise words, all Chinese characters)
         clean = re.sub(r'[，,。.！!？?\s]', '', text)
-        if 1 <= len(clean) <= 4:
+        _noise_words = {'是', '的', '了', '吗', '呢', '啊', '呀', '哦', '嘛', '吧', '好', '不', '我', '你', '他', '她', '这', '那', '得', '到', '在'}
+        if 1 <= len(clean) <= 4 and all('\u4e00' <= c <= '\u9fff' for c in clean):
+            # Reject if any single char is a common noise word
+            if len(clean) <= 2 and any(c in _noise_words for c in clean):
+                return "", text
             return clean, ""
 
         return "", text

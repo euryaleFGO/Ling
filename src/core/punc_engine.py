@@ -24,7 +24,7 @@ def _ensure_project_modelscope_cache() -> None:
 
 
 class PuncEngine:
-    DEFAULT_MODEL_ID = "iic/punc_ct-transformer_zh-cn-common-vocab272727-large"
+    DEFAULT_MODEL_ID = "iic/punc_ct-transformer_cn-en-common-vocab471067-large"
 
     def __init__(self, model_id: str | None = None, device: str = "auto"):
         self.model_id = model_id or self.DEFAULT_MODEL_ID
