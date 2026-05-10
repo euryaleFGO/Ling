@@ -730,7 +730,9 @@ class AsyncConversationManager(
                             )
                         )
                         if prompt_to_speak:
+                            await asyncio.to_thread(self._audio_input.pause_for_tts)
                             await asyncio.to_thread(self._speak_text_sync, prompt_to_speak)
+                            await asyncio.to_thread(self._audio_input.resume_after_tts)
                             self._send_subtitle(prompt_to_speak, is_final=True)
                         if not should_continue:
                             continue
