@@ -124,9 +124,13 @@ class ComponentInitMixin:
             verify_ssl = getattr(self.config.asr, "verify_ssl", True)
             hotwords = " ".join(getattr(self.config.asr, "hotwords", []) or [])
             hotword_weight = getattr(self.config.asr, "hotword_weight", 10.0)
+            profile = self._get_asr_stream_profile()
             ws_asr = FunASRWebSocketProvider(
                 uri=uri, verify_ssl=verify_ssl,
                 hotwords=hotwords, hotword_weight=hotword_weight,
+                chunk_size=profile["chunk_size"],
+                encoder_chunk_look_back=profile["encoder_chunk_look_back"],
+                decoder_chunk_look_back=profile["decoder_chunk_look_back"],
             )
             if ws_asr.health_check(timeout=5.0):
                 self._asr = ws_asr
@@ -143,7 +147,8 @@ class ComponentInitMixin:
         """Try to connect to a FunASR HTTP server. Sets self._asr on success."""
         try:
             from backend.asr.providers import FunASRRemoteProvider
-            remote = FunASRRemoteProvider(base_url=url)
+            profile = self._get_asr_stream_profile()
+            remote = FunASRRemoteProvider(base_url=url, chunk_size=profile["chunk_size"])
             if remote.health_check():
                 self._asr = remote
                 return True
@@ -283,6 +288,25 @@ class ComponentInitMixin:
                     return
                 else:
                     log.info(f"TTS remote unavailable: {self.config.tts.remote_url}")
+                    # Fallback to local when remote unavailable
+                    fallback_dir = self.config.tts.model_dir
+                    if not fallback_dir:
+                        for p in [
+                            _PROJECT_ROOT / "models" / "TTS" / "CosyVoice2-0.5B",
+                        ]:
+                            if p.exists():
+                                fallback_dir = str(p)
+                                break
+                    if fallback_dir and Path(fallback_dir).exists():
+                        from backend.tts.engine import CosyvoiceRealTimeTTS
+                        self._tts = CosyvoiceRealTimeTTS(
+                            model_path=fallback_dir,
+                            load_jit=getattr(self.config.tts, 'load_jit', False),
+                            load_trt=getattr(self.config.tts, 'load_trt', False),
+                        )
+                        self._tts_mode = "local"
+                        log.debug("[conversation] TTS fallback to local")
+                        return
             except Exception as e:
                 log.warn(f"TTS remote init failed: {e}")
 
@@ -300,7 +324,11 @@ class ComponentInitMixin:
                         break
 
             if model_dir and Path(model_dir).exists():
-                self._tts = CosyvoiceRealTimeTTS(model_path=model_dir)
+                self._tts = CosyvoiceRealTimeTTS(
+                    model_path=model_dir,
+                    load_jit=getattr(self.config.tts, 'load_jit', False),
+                    load_trt=getattr(self.config.tts, 'load_trt', False),
+                )
                 self._tts_mode = "local"
                 log.debug("[conversation] TTS local engine ready")
             else:
@@ -405,6 +433,23 @@ class ComponentInitMixin:
         except Exception as e:
             log.warning(f"[conversation] SER init failed: {e}")
 
+    # -- Init: Punc (punctuation restoration) -----------------------------
+
+    def _init_punc(self: "AsyncConversationManager"):
+        """Initialize punctuation restoration engine."""
+        self._punc = None
+        punc_cfg = getattr(self.config, 'punc', None)
+        if not punc_cfg or not punc_cfg.enable:
+            return
+        try:
+            from core.punc_engine import PuncEngine
+            model_id = punc_cfg.model_id or None
+            self._punc = PuncEngine(model_id=model_id, device=punc_cfg.device)
+            log.info("[conversation] Punc engine initialized")
+        except Exception as e:
+            log.warn(f"[conversation] Punc init failed: {e}")
+            self._punc = None
+
     # -- Init: Diarization -------------------------------------------------
 
     def _init_diarization(self: "AsyncConversationManager"):
@@ -431,7 +476,7 @@ class ComponentInitMixin:
                 except Exception:
                     sv_device = "cpu"
 
-            sv_model = self.config.diarization.model_id or "campplus"
+            sv_model = self.config.diarization.model_id or "iic/speech_campplus_sv_zh-cn_16k-common"
             self._sv = SVEngine(model_id=sv_model, device=sv_device)
             log.info(f"[conversation] SVEngine ready (model={sv_model}, device={sv_device})")
 
@@ -462,6 +507,10 @@ class ComponentInitMixin:
             # 注入 speaker_manager 到 Agent（如果已初始化）
             if self._agent and hasattr(self._agent, 'set_speaker_manager'):
                 self._agent.set_speaker_manager(self._speaker_manager)
+
+            # 注入 voiceprint_db 到 Agent（用于声纹统计工具）
+            if self._agent and hasattr(self._agent, 'set_voiceprint_db'):
+                self._agent.set_voiceprint_db(self._voiceprint_db)
 
             log.info(
                 f"[conversation] Diarization ready "
@@ -557,6 +606,7 @@ class ComponentInitMixin:
         self._init_singing()
         self._init_agent()
         self._init_ser()
+        self._init_punc()
         self._init_diarization()
         log.info("Async conversation system initialised")
 
@@ -691,6 +741,21 @@ class ComponentInitMixin:
                     log.info("[conversation] SER engine disabled, cleared")
         except Exception as e:
             log.warn(f"[conversation] SER reload failed: {e}")
+
+        # Punc
+        try:
+            punc_cfg = getattr(self.config, 'punc', None)
+            if punc_cfg and punc_cfg.enable:
+                self._punc = None
+                self._init_punc()
+                if self._punc is not None:
+                    log.info("[conversation] Punc engine reloaded")
+            else:
+                if self._punc is not None:
+                    self._punc = None
+                    log.info("[conversation] Punc engine disabled, cleared")
+        except Exception as e:
+            log.warn(f"[conversation] Punc reload failed: {e}")
 
         # Diarization（含 SV + voiceprint_db + speaker_manager）
         try:

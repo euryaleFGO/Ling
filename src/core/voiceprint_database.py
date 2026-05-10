@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -45,6 +46,7 @@ class VoiceprintDatabase:
         # unknown 计数器
         self._counter_file = self.storage_path / "_counter.json"
         self._next_unknown_id: int = self._load_counter()
+        self._id_lock = threading.Lock()
 
         # 加载所有声纹到内存
         self._load_all_to_memory()
@@ -81,15 +83,16 @@ class VoiceprintDatabase:
 
     def get_next_unknown_id(self) -> str:
         """
-        获取下一个 unknown 说话人 ID 并自增
+        获取下一个 unknown 说话人 ID 并自增（线程安全）
 
         Returns:
             unknown_XX 格式的 ID
         """
-        speaker_id = f"unknown_{self._next_unknown_id:02d}"
-        self._next_unknown_id += 1
-        self._save_counter()
-        return speaker_id
+        with self._id_lock:
+            speaker_id = f"unknown_{self._next_unknown_id:02d}"
+            self._next_unknown_id += 1
+            self._save_counter()
+            return speaker_id
 
     def rename_speaker(self, old_id: str, new_id: str) -> bool:
         """
@@ -148,35 +151,48 @@ class VoiceprintDatabase:
         metadata: Optional[Dict] = None
     ) -> bool:
         """
-        保存声纹向量
+        保存声纹向量（支持同一说话人多条声纹）
+
+        同一 speaker_id 多次调用会追加而非覆盖。
+        存储格式: (N, D) 2D 数组，N=声纹条数，D=特征维度。
 
         Args:
             speaker_id: 说话人 ID
-            embedding: 声纹向量
+            embedding: 声纹向量 (D,) 或 (1, D)
             metadata: 元数据（可选）
 
         Returns:
             是否成功
         """
         try:
-            # 保存声纹向量
+            emb = np.asarray(embedding, dtype=np.float32).reshape(1, -1)
             npy_path = self.storage_path / f"{speaker_id}.npy"
-            np.save(npy_path, embedding)
-            
+
+            # 追加已有 embedding
+            if npy_path.exists():
+                try:
+                    existing = np.load(npy_path)
+                    if existing.ndim == 1:
+                        existing = existing.reshape(1, -1)
+                    emb = np.concatenate([existing, emb], axis=0)
+                except Exception:
+                    pass  # 文件损坏，用新 embedding 覆盖
+
+            np.save(npy_path, emb)
+
             # 保存元数据
             if metadata is not None:
                 json_path = self.storage_path / f"{speaker_id}.json"
-                # 添加时间戳
                 metadata_with_time = {
                     **metadata,
                     "last_updated_at": datetime.now().isoformat()
                 }
                 with open(json_path, 'w', encoding='utf-8') as f:
                     json.dump(metadata_with_time, f, ensure_ascii=False, indent=2)
-            
-            # 更新内存索引
-            self._memory_index[speaker_id] = embedding
-            
+
+            # 更新内存索引（存完整 2D 数组）
+            self._memory_index[speaker_id] = emb
+
             return True
         except Exception as e:
             logger.warning(f"Failed to save voiceprint for speaker '{speaker_id}': {e}")
@@ -218,29 +234,37 @@ class VoiceprintDatabase:
         """
         查找最佳匹配的说话人
 
+        支持每个说话人多条声纹（2D 数组），取最高匹配分。
+
         Args:
-            query_embedding: 查询声纹向量
+            query_embedding: 查询声纹向量 (D,)
             threshold: 相似度阈值
 
         Returns:
-            (speaker_id, score) 或 (None, 0.0)
+            (speaker_id, score) 或 (None, best_score)
         """
         if not self._memory_index:
             return None, 0.0
-        
-        # 批量计算相似度（向量化）
-        speaker_ids = list(self._memory_index.keys())
-        embeddings = np.stack([self._memory_index[sid] for sid in speaker_ids])
-        
-        # 余弦相似度（假设已归一化，使用点积）
-        scores = embeddings @ query_embedding
-        
-        # 找到最大值
-        best_idx = np.argmax(scores)
-        best_score = float(scores[best_idx])
-        
+
+        q = np.asarray(query_embedding, dtype=np.float32).reshape(-1)
+        best_score = -1.0
+        best_sid = None
+
+        for sid, emb in self._memory_index.items():
+            emb_arr = np.asarray(emb, dtype=np.float32)
+            if emb_arr.ndim == 1:
+                # 单条声纹
+                score = float(np.dot(emb_arr, q))
+            else:
+                # 多条声纹 (N, D)，取最高分
+                scores = emb_arr @ q
+                score = float(np.max(scores))
+            if score > best_score:
+                best_score = score
+                best_sid = sid
+
         if best_score >= threshold:
-            return speaker_ids[best_idx], best_score
+            return best_sid, best_score
         else:
             return None, best_score
 
@@ -252,6 +276,75 @@ class VoiceprintDatabase:
             speaker_id 列表
         """
         return list(self._memory_index.keys())
+
+    def get_stats(self) -> dict:
+        """Return database statistics."""
+        total_embeddings = 0
+        for v in self._memory_index.values():
+            total_embeddings += 1 if v.ndim == 1 else v.shape[0]
+
+        storage_bytes = 0
+        for f in self.storage_path.glob("*.npy"):
+            try:
+                storage_bytes += f.stat().st_size
+            except OSError:
+                pass
+
+        unknown_count = sum(
+            1 for sid in self._memory_index
+            if sid.startswith("unknown_")
+        )
+
+        return {
+            "total_speakers": len(self._memory_index),
+            "total_embeddings": total_embeddings,
+            "unknown_speakers": unknown_count,
+            "named_speakers": len(self._memory_index) - unknown_count,
+            "storage_bytes": storage_bytes,
+        }
+
+    def cleanup_unknowns(self, max_age_days: int = 7) -> int:
+        """Remove unknown_XX entries older than max_age_days.
+
+        Returns:
+            Number of entries removed.
+        """
+        import time
+        removed = 0
+        cutoff = time.time() - max_age_days * 86400
+
+        for sid in list(self._memory_index.keys()):
+            if not sid.startswith("unknown_"):
+                continue
+            json_path = self.storage_path / f"{sid}.json"
+            if json_path.exists():
+                try:
+                    mtime = json_path.stat().st_mtime
+                    if mtime < cutoff:
+                        self.delete(sid)
+                        removed += 1
+                except OSError:
+                    pass
+            else:
+                npy_path = self.storage_path / f"{sid}.npy"
+                if npy_path.exists():
+                    try:
+                        if npy_path.stat().st_mtime < cutoff:
+                            self.delete(sid)
+                            removed += 1
+                    except OSError:
+                        pass
+
+        if removed:
+            logger.info(f"[voiceprint] cleaned up {removed} stale unknown entries")
+        return removed
+
+    def get_embedding_count(self, speaker_id: str) -> int:
+        """Return number of embeddings stored for a speaker."""
+        emb = self._memory_index.get(speaker_id)
+        if emb is None:
+            return 0
+        return 1 if emb.ndim == 1 else emb.shape[0]
 
     def delete(self, speaker_id: str) -> bool:
         """

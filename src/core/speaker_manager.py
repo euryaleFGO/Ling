@@ -348,6 +348,74 @@ class SpeakerManager:
             log.error(f"[说话人管理] 重命名失败: {type(e).__name__}: {e}")
             return False
 
+    def identify(self, embedding: np.ndarray) -> tuple[str, float]:
+        """Match an embedding against the voiceprint database.
+
+        Returns (speaker_id, score). Returns ("unknown", 0.0) if no match.
+        """
+        if not self.voiceprint_db:
+            return "unknown", 0.0
+        try:
+            result = self.voiceprint_db.find_best_match(embedding)
+            if result:
+                speaker_id, score = result
+                if speaker_id is not None:
+                    return speaker_id, score
+            return "unknown", 0.0
+        except Exception as e:
+            log.warning(f"[SpeakerManager] identify failed: {e}")
+            return "unknown", 0.0
+
+    def register_embedding(self, name: str, embedding: np.ndarray) -> bool:
+        """Register a speaker with a pre-computed embedding.
+
+        Used by passive registration flow where embedding was captured
+        during the first utterance, before the speaker identified themselves.
+        """
+        if not self.voiceprint_db:
+            return False
+        try:
+            # Check if name already exists by iterating all speakers
+            existing_speaker_id: Optional[str] = None
+            for sid in self.voiceprint_db.list_all():
+                metadata = self.voiceprint_db.load_metadata(sid)
+                if metadata and metadata.get("speaker_name") == name:
+                    existing_speaker_id = sid
+                    break
+
+            if existing_speaker_id is not None:
+                # Update existing speaker's embedding (merge)
+                old_emb = self.voiceprint_db.load_voiceprint(existing_speaker_id)
+                if old_emb is not None:
+                    merged = (old_emb + embedding) / 2
+                    merged = merged / np.linalg.norm(merged)
+                    metadata = self.voiceprint_db.load_metadata(existing_speaker_id) or {}
+                    metadata["last_active_at"] = datetime.now().isoformat()
+                    metadata["sample_count"] = metadata.get("sample_count", 1) + 1
+                    self.voiceprint_db.save_voiceprint(existing_speaker_id, merged, metadata)
+                    log.info(f"[SpeakerManager] merged embedding for '{name}' ({existing_speaker_id})")
+                    return True
+
+            # Generate speaker ID from name
+            speaker_id = name.replace(" ", "_").lower()
+            now = datetime.now()
+            metadata = {
+                "speaker_id": speaker_id,
+                "speaker_name": name,
+                "user_id": speaker_id,
+                "registered_at": now.isoformat(),
+                "last_active_at": now.isoformat(),
+                "sample_count": 1,
+                "embedding_dim": len(embedding),
+                "model_id": getattr(self.sv_engine, 'model_id', 'unknown'),
+            }
+            self.voiceprint_db.save_voiceprint(speaker_id, embedding, metadata)
+            log.info(f"[SpeakerManager] registered new speaker: '{name}' (id={speaker_id})")
+            return True
+        except Exception as e:
+            log.error(f"[SpeakerManager] register_embedding failed: {e}")
+            return False
+
     def update_voiceprint(
         self,
         speaker_id: str,

@@ -21,7 +21,8 @@ from ..memory.entity_extractor import get_entity_extractor
 from ..rag import get_rag_pipeline, RAGConfig
 from ..database.knowledge_dao import get_knowledge_dao
 from .tool_manager import ToolManager
-from ..tools import DateTimeTool, MemoryTool, SummaryTool, BrowserSearchTool, VisionTool, ScreenshotAnalyzeTool, ReminderTool, Live2DMotionTool, ExitAppTool, CameraCaptureTool, TerminalExecuteTool, SkillGeneratorTool, DiagnoseTool, AutoFixTool, CodeModifyTool, SpeakerManageTool
+from ..tools import DateTimeTool, MemoryTool, SummaryTool, BrowserSearchTool, VisionTool, ScreenshotAnalyzeTool, ReminderTool, Live2DMotionTool, ExitAppTool, CameraCaptureTool, TerminalExecuteTool, SkillGeneratorTool, DiagnoseTool, AutoFixTool, CodeModifyTool, SpeakerManageTool, SongTool
+from ..tools.base_tool import BaseTool, ToolResult
 from ..utils.logging_config import setup_logging, get_logger, log_llm_request, log_llm_response, log_error
 
 try:
@@ -35,6 +36,57 @@ except ImportError:
 # 初始化日志
 setup_logging(level=logging.DEBUG, log_file=True, console=False)
 logger = get_logger("agent")
+
+
+class SpeakerStatsTool(BaseTool):
+    """Tool for querying speaker/voiceprint database statistics."""
+
+    def __init__(self):
+        self._voiceprint_db = None
+        self._speaker_manager = None
+
+    def set_voiceprint_db(self, db):
+        self._voiceprint_db = db
+
+    def set_speaker_manager(self, sm):
+        self._speaker_manager = sm
+
+    @property
+    def name(self) -> str:
+        return "speaker_stats"
+
+    @property
+    def description(self) -> str:
+        return "查询声纹数据库统计信息：已注册说话人数量、声纹条数等"
+
+    @property
+    def parameters(self) -> list:
+        return []
+
+    def execute(self, **kwargs) -> "ToolResult":
+        if not self._voiceprint_db:
+            return ToolResult(success=False, error="声纹数据库未初始化")
+        try:
+            stats = self._voiceprint_db.get_stats()
+            lines = [
+                f"已注册说话人: {stats['total_speakers']} 人",
+                f"  命名: {stats['named_speakers']} 人",
+                f"  未知: {stats['unknown_speakers']} 人",
+                f"声纹总数: {stats['total_embeddings']} 条",
+                f"存储大小: {stats['storage_bytes'] / 1024:.1f} KB",
+            ]
+            if self._speaker_manager:
+                try:
+                    speakers = self._speaker_manager.list_speakers()
+                    if speakers:
+                        lines.append("已注册:")
+                        for s in speakers:
+                            lines.append(f"  - {s.speaker_name} ({s.speaker_id})")
+                except Exception:
+                    pass
+            return ToolResult(success=True, data="\n".join(lines))
+        except Exception as e:
+            return ToolResult(success=False, error=str(e))
 
 
 class Agent:
@@ -95,7 +147,6 @@ class Agent:
         self._task_counter: int = 0
         self._task_lock = threading.Lock()
         self._on_tool_status: Optional[Callable[[str, str, str], None]] = None  # callback(tool_name, status, message)
-        self._interrupted = False
 
         # 对话锁（保护 chat() 方法的线程安全）
         self._chat_lock = threading.Lock()
@@ -105,8 +156,10 @@ class Agent:
 
         # 说话人管理
         self._speaker_manage_tool: Optional[SpeakerManageTool] = None
+        self._speaker_stats_tool: Optional[SpeakerStatsTool] = None
         self._current_speaker_id: str = ""
         self._is_unknown_speaker: bool = False
+        self._emotion_context: str = ""
     
     def _setup_tools(self):
         """初始化工具"""
@@ -190,10 +243,24 @@ class Agent:
         self._speaker_manage_tool = SpeakerManageTool()
         self._tool_manager.register(self._speaker_manage_tool)
 
+        # 注册声纹统计工具
+        self._speaker_stats_tool = SpeakerStatsTool()
+        self._tool_manager.register(self._speaker_stats_tool)
+
+        # 注册唱歌工具
+        self._tool_manager.register(SongTool())
+
+    def set_voiceprint_db(self, voiceprint_db):
+        """注入 VoiceprintDatabase 引用到声纹统计工具"""
+        if self._speaker_stats_tool:
+            self._speaker_stats_tool.set_voiceprint_db(voiceprint_db)
+
     def set_speaker_manager(self, speaker_manager):
         """注入 SpeakerManager 引用到说话人管理工具"""
         if self._speaker_manage_tool:
             self._speaker_manage_tool.set_speaker_manager(speaker_manager)
+        if self._speaker_stats_tool:
+            self._speaker_stats_tool.set_speaker_manager(speaker_manager)
 
     def set_speaker_context(self, speaker_id: str, is_unknown: bool = False):
         """设置当前说话人上下文（由 AsyncConversationManager 调用）"""
@@ -202,6 +269,10 @@ class Agent:
         # 同步更新到 tool
         if self._speaker_manage_tool:
             self._speaker_manage_tool._current_speaker_id = speaker_id
+
+    def set_emotion_context(self, emotion_text: str):
+        """设置用户情绪上下文（由 AsyncConversationManager 调用）"""
+        self._emotion_context = emotion_text
 
     def set_tool_status_callback(self, callback: Callable[[str, str, str], None]):
         """设置工具状态回调（用于通知用户工具执行状态）
@@ -452,14 +523,30 @@ class Agent:
         if kg_context:
             parts.append(f"\n{kg_context}")
         
-        # 6. 当前说话人信息
+        # 6. 上下文继承（上一会话摘要）
+        try:
+            session = self._context_manager._conversation_dao.get_session(
+                self._context_manager.session_id
+            ) if self._context_manager.session_id else None
+            if session:
+                prev_summary = session.get("metadata", {}).get("previous_summary")
+                if prev_summary:
+                    parts.append(f"\n上一会话摘要:\n{prev_summary}")
+        except Exception:
+            pass
+
+        # 7. 当前说话人信息
         if self._current_speaker_id:
             if self._is_unknown_speaker:
                 parts.append(f"\n当前说话人是未注册用户 {self._current_speaker_id}。如果用户在对话中说出了自己的名字，请使用 manage_speaker 工具将其注册为真实名字。不要主动反复询问用户的名字，只在用户自然提到时处理。")
             else:
                 parts.append(f"\n当前说话人: {self._current_speaker_id}")
 
-        # 7. 工具使用说明（如果启用）
+        # 7.5 用户情绪（SER）
+        if self._emotion_context:
+            parts.append(f"\n{self._emotion_context}")
+
+        # 8. 工具使用说明（如果启用）
         if self.enable_tools and self._tool_manager.list_tools():
             parts.append(f"""
 工具使用说明：
@@ -469,10 +556,11 @@ class Agent:
 当需要分析屏幕截图时，使用截图分析工具(screenshot_analyze)来识别文字和界面元素。
 当用户明确表达结束会话/告别离开（如”你退下吧””你能自己关机吗””再见””拜拜””byebye””明天见””晚安””早点睡觉”）时，先调用 exit_app 工具，再给出简短告别语。
 当用户要求添加新功能、创建自动化工具、扩展技能时，使用 skill_generator 工具生成新工具。
-当用户说出自己的名字时（如"我叫xxx"、"我是xxx"），使用 manage_speaker 工具将当前说话人注册为该名字。
+当用户说出自己的名字时（如”我叫xxx”、”我是xxx”），使用 manage_speaker 工具将当前说话人注册为该名字。
+当用户要求唱歌或想听歌时，使用 sing_song 工具。
 不要滥用工具，简单的闲聊不需要工具。""")
 
-        # 7. TTS 友好输出（回复会用于语音合成，避免 Markdown/颜文字）
+        # 9. TTS 友好输出（回复会用于语音合成，避免 Markdown/颜文字）
         parts.append("""
 【输出格式】你的回复会直接用于语音合成(TTS)。请勿使用 Markdown（如**粗体**、- 列表）、颜文字、emoji；用自然口语、连贯句子，少换行。列表内容用「第一、第二」或「还有」等口语连接。""")
 
@@ -486,10 +574,14 @@ class Agent:
         """
         发送消息并获取回复（流式）
 
-        支持工具调用的完整流程，耗时工具会后台执行
+        支持工具调用的完整流程，耗时工具会后台执行。
+        使用包装器确保 _chat_lock 在整个 generator 迭代期间被持有，
+        防止并发调用导致共享状态损坏。
         """
-        with self._chat_lock:
-            return self._chat_inner(message, stream)
+        def _locked_generator():
+            with self._chat_lock:
+                yield from self._chat_inner(message, stream)
+        return _locked_generator()
 
     def _chat_inner(
         self,

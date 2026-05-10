@@ -1,0 +1,133 @@
+{
+  "version": "2.0.0",
+  "description": "统一系统配置",
+  "llm": {
+    "api_key": "",
+    "base_url": "https://token-plan-cn.xiaomimimo.com/v1",
+    "model": "mimo-v2-pro",
+    "temperature": 0.7,
+    "max_tokens": 2048,
+    "timeout": 120
+  },
+  "asr": {
+    "provider": "funasr",
+    "device": "auto",
+    "stream_profile": "balanced",
+    "model_dir": "",
+    "vad_model_dir": "",
+    "whisper_api_base": "",
+    "whisper_api_key": "",
+    "hotwords": [],
+    "hotword_weight": 10.0,
+    "enable_model_cache": true,
+    "cache_warmup": false,
+    "remote_url": "wss://home.955id.com:10095"
+  },
+  "tts": {
+    "model_dir": "",
+    "remote_url": "http://home.955id.com:5001",
+    "spk_id": "玲",
+    "enable_cache": true,
+    "cache_size": 100,
+    "cache_common_phrases": [
+      "好的",
+      "明白了",
+      "收到",
+      "没问题",
+      "我知道了",
+      "是的",
+      "不是",
+      "可以",
+      "不可以",
+      "谢谢"
+    ],
+    "parallel_synthesis": true,
+    "max_workers": 2,
+    "load_jit": false,
+    "load_trt": false
+  },
+  "punc": {
+    "enable": true,
+    "model_id": "",
+    "device": "auto"
+  },
+  "ser": {
+    "enable": true,
+    "model_id": "",
+    "device": "auto",
+    "min_audio_sec": 0.8
+  },
+  "sv": {
+    "enable": false,
+    "model_id": "",
+    "device": "auto",
+    "threshold": 0.38,
+    "min_audio_sec": 0.8,
+    "enroll_audio": "",
+    "reject_policy": "drop"
+  },
+  "diarization": {
+    "enable": false,
+    "threshold": 0.75,
+    "model_id": "",
+    "device": "auto",
+    "min_audio_sec": 0.8,
+    "storage_path": "",
+    "max_speakers": 10,
+    "timeout_ms": 500,
+    "notify_speaker_change": true,
+    "allow_concurrent_speakers": false,
+    "voiceprint_cleanup_days": 180,
+    "auto_register_unknown": true
+  },
+  "interrupt": {
+    "enable_barge_in": true,
+    "vad_threshold": 0.5,
+    "min_speech_ms": 300,
+    "response_time_ms": 200,
+    "context_mode": "reset",
+    "feedback_enabled": true,
+    "sound_enabled": false
+  },
+  "audio": {
+    "sample_rate": 16000,
+    "silence_threshold": 0.01,
+    "silence_duration": 0.6,
+    "vad_backend": "rms",
+    "vad_preset": "balanced",
+    "use_vad": true
+  },
+  "performance": {
+    "enable_monitoring": true,
+    "max_history_size": 100,
+    "export_interval_seconds": 300,
+    "export_format": "json"
+  },
+  "speaker_recognition": {
+    "enable": false,
+    "async_recognition": true,
+    "timeout_ms": 500,
+    "enable_cache": true,
+    "cache_size": 100
+  },
+  "advanced": {
+    "enable_debug_logging": false,
+    "log_performance_metrics": true,
+    "auto_optimize": false,
+    "chroma_dir": ""
+  },
+  "general": {
+    "use_text_input": false,
+    "user_id": "default_user",
+    "auto_listen": true
+  },
+  "mongodb": {
+    "uri": "mongodb://localhost:27017",
+    "db_name": "liying_db",
+    "timeout_ms": 5000
+  },
+  "websocket": {
+    "host": "localhost",
+    "port": 8765
+  }
+}

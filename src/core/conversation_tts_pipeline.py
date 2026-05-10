@@ -137,6 +137,8 @@ class TTSPipelineMixin:
                         ):
                             yield chunk_data
 
+                log.debug(f"[TTS] mode={getattr(self, '_tts_mode', 'unknown')}, text={item.text[:30]}...")
+
                 # ---- TTS 缓存查询（P1-2）----
                 if self._tts_cache and not is_singing:
                     cached = self._tts_cache.get(item.text, spk_id=getattr(self._tts, 'default_spk_id', None) or getattr(self._tts, 'spk_id', None))
@@ -318,6 +320,29 @@ class TTSPipelineMixin:
                 raise
             except Exception as exc:
                 log.error(f"TTS playback failed: {exc}")
+                # Remote TTS fallback
+                if getattr(self, '_tts_mode', None) == "remote":
+                    log.warn(f"[TTS] remote failed, attempting local fallback")
+                    try:
+                        self._tts_mode = "local"
+                        from backend.tts.engine.tts_engine import CosyvoiceRealTimeTTS
+                        import os
+                        model_dir = os.environ.get("COSYVOICE_MODEL_DIR", "")
+                        if not model_dir:
+                            for p in ["models/CosyVoice2-0.5B", "models/CosyVoice"]:
+                                if os.path.isdir(p):
+                                    model_dir = p
+                                    break
+                        if model_dir:
+                            _jit = getattr(self.config.tts, 'load_jit', False)
+                            _trt = getattr(self.config.tts, 'load_trt', False)
+                            self._tts = CosyvoiceRealTimeTTS(
+                                model_path=model_dir,
+                                load_jit=_jit, load_trt=_trt,
+                            )
+                            log.info(f"[TTS] fallback to local: {model_dir}")
+                    except Exception as fallback_err:
+                        log.error(f"[TTS] local fallback also failed: {fallback_err}")
 
         # sentinel received, wait for producer
         if producer_thread is not None and producer_thread.is_alive():

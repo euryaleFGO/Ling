@@ -14,6 +14,7 @@
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 from dataclasses import dataclass, field
@@ -53,6 +54,7 @@ class ASRConfig:
     enable_model_cache: bool = True
     cache_warmup: bool = False
     remote_url: str = ""
+    verify_ssl: bool = True
 
 
 @dataclass
@@ -68,6 +70,8 @@ class TTSConfig:
     ])
     parallel_synthesis: bool = True
     max_workers: int = 2
+    load_jit: bool = False
+    load_trt: bool = False
 
 
 @dataclass
@@ -156,6 +160,11 @@ class SpeakerRecognitionConfig:
     timeout_ms: int = 500
     enable_cache: bool = True
     cache_size: int = 100
+    # Passive registration
+    passive_registration: bool = True
+    passive_prompt: str = "你好，我好像不认识你，请问你是谁呀？"
+    match_threshold: float = 0.75
+    voiceprint_dir: str = "data/voiceprints"
 
 
 @dataclass
@@ -173,6 +182,7 @@ class GeneralConfig:
     use_text_input: bool = False
     user_id: str = "default_user"
     auto_listen: bool = True
+    ws_api_key: str = ""
 
 
 @dataclass
@@ -184,10 +194,33 @@ class MongoDBConfig:
 
 
 @dataclass
+class SingingConfig:
+    """歌声合成配置"""
+    enable: bool = False
+    diffsinger_root: str = ""
+    exp_name: str = "opencpop"
+    vocoder_ckpt: str = ""
+    device: str = "cuda"
+    sample_rate: int = 44100
+
+
+@dataclass
 class WebSocketConfig:
     """WebSocket 消息服务配置"""
     host: str = "localhost"
     port: int = 8765
+
+
+@dataclass
+class SSHTunnelConfig:
+    """SSH 端口转发隧道配置"""
+    enable: bool = False
+    host: str = ""
+    port: int = 22
+    local_tts_port: int = 5001
+    remote_tts_port: int = 5001
+    local_asr_port: int = 5002
+    remote_asr_port: int = 5002
 
 
 @dataclass
@@ -210,6 +243,8 @@ class SystemConfig:
     general: GeneralConfig = field(default_factory=GeneralConfig)
     mongodb: MongoDBConfig = field(default_factory=MongoDBConfig)
     websocket: WebSocketConfig = field(default_factory=WebSocketConfig)
+    singing: SingingConfig = field(default_factory=SingingConfig)
+    ssh_tunnel: SSHTunnelConfig = field(default_factory=SSHTunnelConfig)
 
 
 # ============================================================
@@ -224,6 +259,9 @@ def _parse_sub_config(data: dict, cls, prefix: str = ""):
     for name, param in sig.parameters.items():
         if name in data:
             kwargs[name] = data[name]
+    for key in data:
+        if key not in sig.parameters:
+            log.warning(f"未知的配置字段: {prefix}{key}")
     return cls(**kwargs)
 
 
@@ -332,7 +370,10 @@ class ConfigManager:
         if c.websocket.port == 8765:
             env_port = os.environ.get("LIYING_WS_PORT")
             if env_port:
-                c.websocket.port = int(env_port)
+                try:
+                    c.websocket.port = int(env_port)
+                except ValueError:
+                    log.warning(f"LIYING_WS_PORT 环境变量值无效: {env_port}")
 
         # ASR remote URL
         if not c.asr.remote_url:
@@ -409,6 +450,8 @@ class ConfigManager:
                 config.general.user_id = gen_data["user_id"]
             if "auto_listen" in gen_data:
                 config.general.auto_listen = gen_data["auto_listen"]
+            if "ws_api_key" in gen_data:
+                config.general.ws_api_key = gen_data["ws_api_key"]
 
         # MongoDB
         if "mongodb" in data:
@@ -417,6 +460,10 @@ class ConfigManager:
         # WebSocket
         if "websocket" in data:
             config.websocket = _parse_sub_config(data["websocket"], WebSocketConfig)
+
+        # SSH Tunnel
+        if "ssh_tunnel" in data:
+            config.ssh_tunnel = _parse_sub_config(data["ssh_tunnel"], SSHTunnelConfig)
 
         return config
 
@@ -489,6 +536,7 @@ class ConfigManager:
                 "enable_model_cache": c.asr.enable_model_cache,
                 "cache_warmup": c.asr.cache_warmup,
                 "remote_url": c.asr.remote_url,
+                "verify_ssl": c.asr.verify_ssl,
             },
             "tts": {
                 "model_dir": c.tts.model_dir,
@@ -563,6 +611,10 @@ class ConfigManager:
                 "timeout_ms": c.speaker_recognition.timeout_ms,
                 "enable_cache": c.speaker_recognition.enable_cache,
                 "cache_size": c.speaker_recognition.cache_size,
+                "passive_registration": c.speaker_recognition.passive_registration,
+                "passive_prompt": c.speaker_recognition.passive_prompt,
+                "match_threshold": c.speaker_recognition.match_threshold,
+                "voiceprint_dir": c.speaker_recognition.voiceprint_dir,
             },
             "advanced": {
                 "enable_debug_logging": c.advanced.enable_debug_logging,
@@ -574,6 +626,7 @@ class ConfigManager:
                 "use_text_input": c.general.use_text_input,
                 "user_id": c.general.user_id,
                 "auto_listen": c.general.auto_listen,
+                "ws_api_key": c.general.ws_api_key,
             },
             "mongodb": {
                 "uri": c.mongodb.uri,
@@ -585,6 +638,28 @@ class ConfigManager:
                 "port": c.websocket.port,
             },
         }
+
+        # singing 配置
+        if c.singing:
+            data["singing"] = {
+                "enable": c.singing.enable,
+                "diffsinger_root": c.singing.diffsinger_root,
+                "exp_name": c.singing.exp_name,
+                "vocoder_ckpt": c.singing.vocoder_ckpt,
+                "device": c.singing.device,
+                "sample_rate": c.singing.sample_rate,
+            }
+        # ssh_tunnel 配置
+        if c.ssh_tunnel:
+            data["ssh_tunnel"] = {
+                "enable": c.ssh_tunnel.enable,
+                "host": c.ssh_tunnel.host,
+                "port": c.ssh_tunnel.port,
+                "local_tts_port": c.ssh_tunnel.local_tts_port,
+                "remote_tts_port": c.ssh_tunnel.remote_tts_port,
+                "local_asr_port": c.ssh_tunnel.local_asr_port,
+                "remote_asr_port": c.ssh_tunnel.remote_asr_port,
+            }
 
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -624,14 +699,17 @@ class ConfigManager:
 # ============================================================
 
 _config_manager: Optional[ConfigManager] = None
+_config_lock = threading.Lock()
 
 
 def get_config_manager() -> ConfigManager:
     """获取全局配置管理器实例"""
     global _config_manager
     if _config_manager is None:
-        _config_manager = ConfigManager()
-        _config_manager.load()
+        with _config_lock:
+            if _config_manager is None:
+                _config_manager = ConfigManager()
+                _config_manager.load()
     return _config_manager
 
 

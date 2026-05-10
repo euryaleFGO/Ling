@@ -18,6 +18,7 @@ import contextlib
 import logging
 import time
 import threading
+from collections import deque
 from typing import Optional, Callable
 
 import numpy as np
@@ -93,6 +94,7 @@ class AsyncConversationManager(
 
         # SER engine
         self._ser = None
+        self._emotion_history: deque = deque(maxlen=10)
 
         # PUNC engine
         self._punc = None
@@ -185,6 +187,50 @@ class AsyncConversationManager(
     #  State management
     # ============================================================
 
+    def _build_emotion_context(self) -> str:
+        """Build emotion context string from SER history for LLM injection."""
+        if not self._emotion_history:
+            return ""
+
+        _LABEL_CN = {
+            "anger": "愤怒", "joy": "开心", "sadness": "难过",
+            "neutral": "平静", "surprise": "惊讶", "shy": "害羞",
+            "think": "思考", "fear": "恐惧", "cry": "哭泣",
+        }
+
+        history = list(self._emotion_history)
+        if len(history) == 1:
+            r = history[0]
+            label_cn = _LABEL_CN.get(r.emotion9, r.emotion9)
+            return f"[用户情绪: {label_cn} (置信度 {r.score:.2f})]"
+
+        # Multiple turns: show trend
+        labels = []
+        for r in history:
+            labels.append(_LABEL_CN.get(r.emotion9, r.emotion9))
+
+        last = history[-1]
+        last_cn = _LABEL_CN.get(last.emotion9, last.emotion9)
+        trend = " → ".join(labels)
+
+        # Simple trend analysis
+        recent = [r.emotion9 for r in history[-3:]]
+        if all(e == "sadness" for e in recent):
+            hint = "用户最近持续情绪低落，请温柔安慰。"
+        elif all(e == "anger" for e in recent):
+            hint = "用户最近持续愤怒，请冷静安抚。"
+        elif recent[-1] == "joy" and recent[0] != "joy":
+            hint = "用户情绪转好，可以积极互动。"
+        elif recent[-1] == "sadness" and recent[0] == "joy":
+            hint = "用户从开心转为难过，请关心一下。"
+        else:
+            hint = ""
+
+        text = f"[用户近{len(history)}轮情绪: {trend}] 当前: {last_cn} (置信度 {last.score:.2f})"
+        if hint:
+            text += f" {hint}"
+        return text
+
     def _set_state(self, state: ConversationState):
         old_state = self.state
         self.state = state
@@ -212,6 +258,11 @@ class AsyncConversationManager(
         if self._agent and hasattr(self._agent, 'set_speaker_context'):
             is_unknown = self._current_user_id.startswith("unknown_")
             self._agent.set_speaker_context(self._current_user_id, is_unknown)
+
+        # 设置用户情绪上下文到 Agent
+        if self._agent and hasattr(self._agent, 'set_emotion_context'):
+            emotion_text = self._build_emotion_context()
+            self._agent.set_emotion_context(emotion_text)
 
         self._set_state(ConversationState.PROCESSING)
 

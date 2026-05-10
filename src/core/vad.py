@@ -187,6 +187,8 @@ class SileroVADBackend(VADBackend):
             )
     
     def detect_speech(self, audio_chunk: np.ndarray, sample_rate: int = 16000) -> bool:
+        if sample_rate not in (8000, 16000):
+            raise ValueError(f"Silero VAD requires 8kHz or 16kHz, got {sample_rate}")
         self._ensure_model()
         self._sample_rate = sample_rate
         

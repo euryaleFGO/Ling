@@ -84,12 +84,71 @@ class SVEngine:
             raise RuntimeError(self._model_error)
         try:
             _ensure_project_modelscope_cache()
+
+            # Set deterministic CUDA operations BEFORE loading model
+            try:
+                import torch
+                torch.backends.cudnn.deterministic = True
+                torch.backends.cudnn.benchmark = False
+            except Exception:
+                pass
+
             from funasr import AutoModel
             self._model = AutoModel(model=self.model_id, device=self._resolve_device(), disable_update=True)
+
+            # Explicitly set eval mode — Dropout / BatchNorm must not
+            # use training-time stochastic behaviour during inference.
+            self._set_eval_mode()
+
             self._model_ready = True
         except Exception as e:
             self._model_error = f"load_failed:{type(e).__name__}:{e}"
             raise
+
+    def _set_eval_mode(self) -> None:
+        """Recursively set all torch.nn.Module sub-components to eval mode.
+
+        FunASR ``AutoModel`` is a wrapper, not an ``nn.Module`` itself.
+        The actual model lives at various depths depending on the pipeline.
+        We walk the common attribute paths *and* call ``named_children()``
+        on anything that looks like a module.
+        """
+        try:
+            import torch
+            visited: set[int] = set()
+            queue = [self._model]
+            while queue:
+                obj = queue.pop(0)
+                oid = id(obj)
+                if oid in visited:
+                    continue
+                visited.add(oid)
+
+                if isinstance(obj, torch.nn.Module):
+                    obj.eval()
+
+                # Walk PyTorch children (the standard way)
+                if hasattr(obj, "named_children"):
+                    try:
+                        for _, child in obj.named_children():
+                            if id(child) not in visited:
+                                queue.append(child)
+                    except Exception:
+                        pass
+
+                # Also probe common FunASR wrapper attributes
+                for attr in ("model", "_model", "encoder", "backbone",
+                             "frontend", "sv_model", "asr_model"):
+                    try:
+                        child = getattr(obj, attr, None)
+                        if child is not None and id(child) not in visited:
+                            queue.append(child)
+                    except Exception:
+                        pass
+
+            logger.debug("SVEngine: eval mode set on all sub-modules")
+        except Exception as exc:
+            logger.debug(f"SVEngine: could not set eval mode: {exc}")
 
     @staticmethod
     def _to_float32(audio: np.ndarray) -> np.ndarray:
@@ -116,6 +175,9 @@ class SVEngine:
 
     @staticmethod
     def _extract_embedding(res) -> Optional[np.ndarray]:
+        _PREFERRED_KEYS = ("spk_embedding", "speaker_embedding",
+                           "embedding", "embs", "spk_emb")
+
         def _from_any(x):
             if x is None:
                 return None
@@ -136,23 +198,37 @@ class SVEngine:
                     return None
             return None
 
+        def _extract_from_dict(d):
+            for k in _PREFERRED_KEYS:
+                if k in d:
+                    emb = _from_any(d.get(k))
+                    if emb is not None and emb.size > 0:
+                        logger.debug(f"_extract_embedding: found key='{k}', "
+                                     f"shape={emb.shape}")
+                        return emb
+            return None
+
         if isinstance(res, list) and len(res) > 0:
             item = res[0]
             if isinstance(item, dict):
-                for k in ("spk_embedding", "speaker_embedding", "embedding", "embs", "spk_emb"):
-                    if k in item:
-                        emb = _from_any(item.get(k))
-                        if emb is not None and emb.size > 0:
-                            return emb
+                emb = _extract_from_dict(item)
+                if emb is not None:
+                    return emb
+            else:
+                # Maybe list of embeddings directly
+                emb = _from_any(item)
+                if emb is not None and emb.size > 0:
+                    logger.debug(f"_extract_embedding: extracted from "
+                                 f"list[0], shape={emb.shape}")
+                    return emb
         if isinstance(res, dict):
-            for k in ("spk_embedding", "speaker_embedding", "embedding", "embs", "spk_emb"):
-                if k in res:
-                    emb = _from_any(res.get(k))
-                    if emb is not None and emb.size > 0:
-                        return emb
+            emb = _extract_from_dict(res)
+            if emb is not None:
+                return emb
         # Last fallback: maybe raw embedding array directly
         emb = _from_any(res)
         if emb is not None and emb.size > 0:
+            logger.debug(f"_extract_embedding: fallback raw, shape={emb.shape}")
             return emb
         return None
 
@@ -161,10 +237,29 @@ class SVEngine:
         a = self._to_float32(audio)
         if a.size == 0:
             raise ValueError("empty_audio")
-        out = self._model.generate(input=a)
+
+        # Resample to 16kHz if needed (model expects 16kHz)
+        if sample_rate != 16000:
+            try:
+                import librosa
+                a = librosa.resample(a, orig_sr=sample_rate, target_sr=16000)
+            except ImportError:
+                logger.warning("librosa not available, cannot resample from %d to 16000", sample_rate)
+
+        import torch
+        with torch.no_grad():
+            out = self._model.generate(input=a)
+
         emb = self._extract_embedding(out)
         if emb is None:
+            # Log the raw output for debugging
+            logger.error(f"SVEngine: _extract_embedding returned None. "
+                         f"raw type={type(out)}, "
+                         f"raw={repr(out)[:500]}")
             raise RuntimeError("sv_embedding_not_found")
+
+        logger.debug(f"SVEngine: extracted embedding dim={emb.shape}, "
+                     f"first5={emb[:5]}")
         return self._l2norm(emb)
 
     def enroll_audio(self, audio: np.ndarray, sample_rate: int = 16000) -> np.ndarray:

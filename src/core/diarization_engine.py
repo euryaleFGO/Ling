@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -28,6 +30,19 @@ import numpy as np
 from core.sv_engine import SVEngine
 
 log = logging.getLogger(__name__)
+
+# Module-level singleton thread pool for speaker identification
+_shared_executor = None
+_executor_lock = threading.Lock()
+
+
+def _get_executor():
+    global _shared_executor
+    if _shared_executor is None:
+        with _executor_lock:
+            if _shared_executor is None:
+                _shared_executor = ThreadPoolExecutor(max_workers=2)
+    return _shared_executor
 
 
 # ============================================================================
@@ -93,10 +108,12 @@ class DiarizationEngine:
         # 缓存机制（避免重复计算）
         self._embedding_cache: Dict[str, np.ndarray] = {}
         self._cache_size = 100
+        self._cache_lock = threading.Lock()
         
         # 记录上一次识别的说话人
         self._last_speaker_id: Optional[str] = None
-        
+        self._speaker_lock = threading.Lock()
+
         # 错误处理和降级策略（需求 8.1-8.6）
         self._consecutive_failures: int = 0
         self._max_failures: int = max_failures
@@ -149,7 +166,7 @@ class DiarizationEngine:
         
         # 需求 8.4: 使用超时控制（默认 500ms）
         start_time = time.time()
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        executor = _get_executor()
         future = executor.submit(self._do_identify, audio, sample_rate, duration_sec)
         
         try:
@@ -198,8 +215,8 @@ class DiarizationEngine:
                 is_confident=False
             )
         finally:
-            executor.shutdown(wait=False)
-    
+            pass
+
     def get_last_speaker(self) -> Optional[str]:
         """获取上一次识别的说话人 ID"""
         return self._last_speaker_id
@@ -257,7 +274,8 @@ class DiarizationEngine:
                     result = self.speaker_manager.register_unknown(audio, sample_rate)
                     if result.success:
                         new_id = result.speaker_id
-                        self._last_speaker_id = new_id
+                        with self._speaker_lock:
+                            self._last_speaker_id = new_id
                         log.info(f"[说话人识别] 自动注册 unknown: {new_id}")
                         return DiarizationResult(
                             speaker_id=new_id,
@@ -280,7 +298,8 @@ class DiarizationEngine:
             )
         
         # 识别成功
-        self._last_speaker_id = speaker_id
+        with self._speaker_lock:
+            self._last_speaker_id = speaker_id
         is_confident = score >= (self.threshold + 0.05)  # 高置信度：超过阈值 5%
         
         return DiarizationResult(
@@ -326,25 +345,27 @@ class DiarizationEngine:
         audio_hash = hashlib.md5(audio.tobytes()).hexdigest()
         
         # 检查缓存
-        if audio_hash in self._embedding_cache:
-            return self._embedding_cache[audio_hash]
-        
-        # 提取声纹
+        with self._cache_lock:
+            if audio_hash in self._embedding_cache:
+                return self._embedding_cache[audio_hash]
+
+        # 提取声纹（可能耗时，在锁外执行）
         embedding = self.sv_engine.embed(audio, sample_rate=sample_rate)
-        
+
         # 添加到缓存
         self._add_to_cache(audio_hash, embedding)
-        
+
         return embedding
     
     def _add_to_cache(self, audio_hash: str, embedding: np.ndarray):
-        """添加到缓存（LRU 策略）"""
-        if len(self._embedding_cache) >= self._cache_size:
-            # 删除最早的一个（简单 FIFO）
-            first_key = next(iter(self._embedding_cache))
-            del self._embedding_cache[first_key]
-        
-        self._embedding_cache[audio_hash] = embedding
+        """添加到缓存（LRU 策略），线程安全"""
+        with self._cache_lock:
+            if len(self._embedding_cache) >= self._cache_size:
+                # 删除最早的一个（简单 FIFO）
+                first_key = next(iter(self._embedding_cache))
+                del self._embedding_cache[first_key]
+
+            self._embedding_cache[audio_hash] = embedding
 
 
 # ============================================================================

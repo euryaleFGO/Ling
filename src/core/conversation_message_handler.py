@@ -278,6 +278,27 @@ class MessageHandlerMixin:
                 log.debug(f"[ASR] speaker embedding extraction failed: {e}")
                 self._last_speaker_embedding = None
 
+        # SER: recognize user emotion from audio
+        if final and full_audio is not None and self._ser is not None:
+            try:
+                ser_result = self._ser.predict(
+                    full_audio, sample_rate=self.config.audio.sample_rate
+                )
+                self._emotion_history.append(ser_result)
+                log.info(f"[SER] emotion={ser_result.emotion9} ({ser_result.label}, score={ser_result.score:.3f})")
+            except Exception as e:
+                log.debug(f"[SER] prediction failed: {e}")
+
+        # Punctuation restoration
+        if final and self._punc is not None:
+            try:
+                punctuated = self._punc.add_punctuation(final)
+                if punctuated != final:
+                    log.info(f"[PUNC] '{final}' -> '{punctuated}'")
+                    final = punctuated
+            except Exception as e:
+                log.debug(f"[PUNC] failed: {e}")
+
         if final:
             log.debug(f"[ASR] final: '{final}'")
         return final or None

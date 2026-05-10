@@ -505,7 +505,7 @@ class _FunASRWSClient:
         self._last_text = ""
 
     def feed_audio(self, chunk: np.ndarray) -> str:
-        """发送音频块，返回当前累积结果"""
+        """发送音频块（非阻塞），返回当前累积结果"""
         if not self._connected or self._ws is None:
             return ""
         # 收集已有中间结果
@@ -518,9 +518,10 @@ class _FunASRWSClient:
         # float32 → int16 bytes
         pcm_bytes = self._to_pcm_bytes(chunk)
         try:
+            # 非阻塞发送：fire-and-forget，不阻塞 VAD 循环
             asyncio.run_coroutine_threadsafe(
                 self._ws.send(pcm_bytes), self._loop
-            ).result(timeout=2)
+            )
         except Exception as e:
             self._log.debug(f"[ASR-WS] 发送失败: {e}")
             return ""
@@ -543,10 +544,10 @@ class _FunASRWSClient:
         except Exception as e:
             self._log.debug(f"[ASR-WS] 发送结束信号失败: {e}")
 
-        # 等待最终结果（最多 10 秒）
+        # 等待最终结果（最多 5 秒，避免长时间阻塞）
         final_text = ""
         try:
-            final_text = self._result_queue.get(timeout=10)
+            final_text = self._result_queue.get(timeout=5)
         except queue.Empty:
             if not self._connected:
                 return self._last_text

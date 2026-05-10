@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 CosyVoice2 实时 TTS 音频生成模块
-适配 4GB 显卡，强制关闭 JIT 和 TRT 优化
+支持 JIT 和 TRT 加速（通过 load_jit/load_trt 参数开启）
 
 复刻自 MagicMirror/backend/TTS.py 的设计思路：
 - 延迟初始化、音色缓存、并行处理
@@ -24,6 +24,8 @@ import io
 from queue import Queue, Empty
 from threading import Thread, Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from core.audio_types import StreamingChunk
 
 logger = logging.getLogger(__name__)
 
@@ -80,14 +82,14 @@ class CosyvoiceRealTimeTTS:
         from cosyvoice.cli.cosyvoice import CosyVoice2
         from cosyvoice.utils.file_utils import load_wav
 
-        # 4GB 显卡强制关闭 JIT 和 TRT
+        # JIT/TRT 加速（需足够显存，6GB+ 推荐开启）
         if load_jit or load_trt:
-            logger.warning(f"[WARN] 4GB 显卡不支持 JIT/TRT 优化，已强制关闭")
-            load_jit = False
-            load_trt = False
-        
-        logger.info(f"加载模型中... (JIT: 禁用, TRT: 禁用, FP16: 启用)")
-        self.cosyvoice = CosyVoice2(model_path, load_jit=False, load_trt=False, fp16=True)
+            logger.info(f"[TTS] 启用加速: JIT={load_jit}, TRT={load_trt}")
+        else:
+            logger.info(f"[TTS] FP16 模式（JIT/TRT 未开启）")
+
+        logger.info(f"加载模型中... (JIT: {'启用' if load_jit else '禁用'}, TRT: {'启用' if load_trt else '禁用'}, FP16: 启用)")
+        self.cosyvoice = CosyVoice2(model_path, load_jit=load_jit, load_trt=load_trt, fp16=True)
         self.load_wav_func = load_wav
         self.sample_rate = self.cosyvoice.sample_rate
         self.ref_wav = None
@@ -340,28 +342,33 @@ class CosyvoiceRealTimeTTS:
         logger.info(f"【合成】{idx}：{seg[:30]}...")
         results = None
         try:
-            # 1）生成 - 需要加锁保护音色缓存访问
+            # 1）在锁内读取音色缓存到局部变量
             with self._cache_lock:
-                if use_clone and self._prompt_semantic is not None:
-                    results = self.cosyvoice.inference(
-                        seg, prompt_semantic=self._prompt_semantic,
-                        spk_emb=self._spk_emb, stream=False)
+                local_prompt_semantic = self._prompt_semantic
+                local_spk_emb = self._spk_emb
+
+            # 2）推理调用放在锁外，避免长时间持锁
+            if use_clone and local_prompt_semantic is not None:
+                results = self.cosyvoice.inference(
+                    seg, prompt_semantic=local_prompt_semantic,
+                    spk_emb=local_spk_emb, stream=False)
+            else:
+                # 注意：inference_zero_shot 的 prompt_speech_16k 不能为空，否则会在 frontend 里触发 NoneType 错误
+                if self.ref_wav is None:
+                    if self.default_spk_id is None:
+                        raise RuntimeError("无参考音频且未加载 spk2info.pt，无法生成默认音色")
+                    # 使用已注册的说话人（通过 zero_shot_spk_id 走缓存分支）
+                    results = self.cosyvoice.inference_zero_shot(
+                        seg, '', None, zero_shot_spk_id=self.default_spk_id, stream=False)
                 else:
-                    # 注意：inference_zero_shot 的 prompt_speech_16k 不能为空，否则会在 frontend 里触发 NoneType 错误
-                    if self.ref_wav is None:
-                        if self.default_spk_id is None:
-                            raise RuntimeError("无参考音频且未加载 spk2info.pt，无法生成默认音色")
-                        # 使用已注册的说话人（通过 zero_shot_spk_id 走缓存分支）
-                        results = self.cosyvoice.inference_zero_shot(
-                            seg, '', None, zero_shot_spk_id=self.default_spk_id, stream=False)
-                    else:
-                        results = self.cosyvoice.inference_zero_shot(
-                            seg, self.sample_text, self.ref_wav, stream=False)
-                
-                # ✅ 关键：生成器→列表，防止二次next抛StopIteration
-                results = list(results)
-                
-                # 2）缓存音色（第一次，需要线程安全）
+                    results = self.cosyvoice.inference_zero_shot(
+                        seg, self.sample_text, self.ref_wav, stream=False)
+
+            # ✅ 关键：生成器→列表，防止二次next抛StopIteration
+            results = list(results)
+
+            # 3）缓存音色（第一次，需要线程安全）
+            with self._cache_lock:
                 if use_clone and self._prompt_semantic is None:
                     first = results[0]
                     self._prompt_semantic = first.get("prompt_semantic")
@@ -508,6 +515,8 @@ class CosyvoiceRealTimeTTS:
             
             # 边等待边按顺序输出
             while next_to_yield <= total_segments:
+                audio = None
+                skip = False
                 with condition:
                     # 等待下一个需要的段落完成
                     while next_to_yield not in completed:
@@ -515,15 +524,17 @@ class CosyvoiceRealTimeTTS:
                         # 检查是否所有任务都完成了
                         if all(f.done() for f in futures):
                             break
-                    
+
                     if next_to_yield in completed:
                         audio = completed.pop(next_to_yield)
-                        if audio is not None:
-                            yield (audio, next_to_yield, total_segments)
-                        next_to_yield += 1
                     elif all(f.done() for f in futures):
                         # 所有任务完成但当前段落失败
-                        next_to_yield += 1
+                        skip = True
+
+                # yield OUTSIDE the lock
+                if audio is not None:
+                    yield StreamingChunk(audio, next_to_yield, total_segments, visemes=None)
+                next_to_yield += 1
         
         logger.info(f"[TTS流式] 合成完成")
 
