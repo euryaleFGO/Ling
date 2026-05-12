@@ -6,7 +6,7 @@
 
 ```bash
 # 本地打包后上传
-scp -P 22 tts_server.zip root@your-server.com:~/
+scp -P <PORT> tts_server.zip user@your-server:~/
 ```
 
 ### 2. 服务器上解压并安装
@@ -103,13 +103,13 @@ curl -X POST http://localhost:5001/tts/generate \
 在**本地**执行一次（保持该终端不关）：
 
 ```bash
-ssh -L 5001:localhost:5001 -P 22 root@your-server.com
+ssh -L 5001:localhost:5001 -P <PORT> user@your-server
 ```
 
 或只做端口转发（不登录 shell）：
 
 ```bash
-ssh -L 5001:localhost:5001 -P 22 -N root@your-server.com
+ssh -L 5001:localhost:5001 -P <PORT> -N user@your-server
 ```
 
 之后在本地把服务当成 `127.0.0.1:5001` 用即可：
