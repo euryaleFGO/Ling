@@ -143,7 +143,7 @@ def main():
     print("打包完成！")
     print(f"输出文件: {OUTPUT_ZIP}")
     print("\n上传命令:")
-    print(f"  scp -P 22 {OUTPUT_ZIP} root@your-server.com:~/")
+    print(f"  scp -P <PORT> {OUTPUT_ZIP} user@your-server:~/")
     print("=" * 50)
 
 if __name__ == "__main__":
