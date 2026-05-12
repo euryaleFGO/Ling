@@ -46,6 +46,19 @@ def is_exit_requested() -> bool:
     return _event.is_set()
 
 
+def peek_exit_request() -> Optional[str]:
+    """
+    若已请求退出则返回原因（不清除事件）。
+
+    供对话循环在 break 前记录日志并退出，而把 consume_exit_request 留给
+    Qt 主线程（如 Launcher._check_exit_signal）或 main 入口统一处理。
+    """
+    with _lock:
+        if not _event.is_set():
+            return None
+        return _reason or ""
+
+
 def consume_exit_request() -> Optional[str]:
     """消费一次退出请求并清除标记，返回退出原因。"""
     global _reason

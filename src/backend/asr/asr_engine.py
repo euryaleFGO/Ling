@@ -233,7 +233,7 @@ class ASREngine:
                 logger.addHandler(handler)
 
     def _load_offline_model(self):
-        """按需加载离线模型（含 VAD，用于整段音频识别）"""
+        """按需加载离线模型（整段识别；默认不配 VAD，见下）"""
         if self._model_offline is not None:
             return
 
@@ -244,13 +244,18 @@ class ASREngine:
             "device": self.config.device,
             "disable_update": self.config.disable_update,
         }
-        if self.config.use_vad and self.config.vad_model:
-            logger.info(f"[ASR] VAD 模型: {self.config.vad_model}")
+        # 与 deploy/asr_server 一致：离线 generate 若挂 vad_model，FunASR 在 CPU 上可能将
+        # batch_size 置 0 触发 "batch_size must be set 1"。整段识别由上游 VAD 切段即可。
+        use_vad_offline = os.environ.get("ASR_OFFLINE_USE_VAD", "0").strip().lower() in (
+            "1", "true", "yes",
+        )
+        if use_vad_offline and self.config.use_vad and self.config.vad_model:
+            logger.info(f"[ASR] 离线模型附带 VAD: {self.config.vad_model}")
             kwargs["vad_model"] = self.config.vad_model
             kwargs["vad_kwargs"] = {"max_single_segment_time": 60000}
 
         self._model_offline = AutoModel(**kwargs)
-        logger.info("[ASR] 离线模型加载完成")
+        logger.info("[ASR] 离线模型加载完成 (offline_vad=%s)", use_vad_offline)
 
     # ------------------------------------------------------------------
     #  离线识别

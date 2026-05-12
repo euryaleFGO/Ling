@@ -214,7 +214,11 @@ class AudioInput:
             return  # 已在运行
         flushed = self.flush_buffer()
         self._vad.reset()
-        log.debug(f"[AudioIO] mic resuming (flushed {flushed} stale chunks)")
+        # 等待驱动缓冲区排空后二次清空，防止 TTS 残留音频混入下一轮录音
+        # 扬声器尾音/房间混响常 >50ms，过短易导致下一句 ASR 吃到「了、因为」等碎片
+        time.sleep(0.22)
+        flushed2 = self.flush_buffer()
+        log.debug(f"[AudioIO] mic resuming (flushed {flushed}+{flushed2} stale chunks)")
 
         def audio_callback(indata, frames, time_info, status):
             if status:
@@ -237,6 +241,12 @@ class AudioInput:
             callback=audio_callback,
         )
         self._stream.start()
+        try:
+            dropped = self._discard_input_until_quiet()
+            if dropped:
+                self.flush_buffer()
+        except Exception as e:
+            log.debug(f"[AudioIO] post-TTS quiet discard skipped: {e}")
         log.debug("[AudioIO] mic resumed after TTS")
     
     def start_interrupt_detection(
@@ -330,10 +340,93 @@ class AudioInput:
             except queue.Empty:
                 break
         return n
+
+    def _discard_input_until_quiet(
+        self,
+        max_seconds: float = 0.55,
+        rms_thresh: float = 0.018,
+        need_quiet_chunks: int = 4,
+        chunk_timeout: float = 0.08,
+    ) -> int:
+        """
+        从输入队列读块并丢弃，直到连续若干块 RMS 低于门限。
+
+        用于 TTS 刚结束、麦克风刚恢复时，把扬声器尾音/混响从队列里清掉，
+        减轻下一句 ASR 吃到「了、因为」等上一句碎片。
+        """
+        deadline = time.time() + max_seconds
+        quiet_run = 0
+        drained = 0
+        while time.time() < deadline and self._is_listening:
+            chunk = self.get_audio_chunk(timeout=chunk_timeout)
+            if chunk is None:
+                continue
+            drained += 1
+            arr = np.asarray(chunk, dtype=np.float64).ravel()
+            if arr.size == 0:
+                continue
+            rms = float(np.sqrt(np.mean(arr * arr)))
+            if rms < rms_thresh:
+                quiet_run += 1
+                if quiet_run >= need_quiet_chunks:
+                    break
+            else:
+                quiet_run = 0
+        if drained > 0:
+            log.debug(
+                f"[AudioIO] post-TTS discard: dropped {drained} chunks, quiet_run={quiet_run}"
+            )
+        return drained
+
+    def _drain_straggler_audio_chunks(self, max_rounds: int = 48, empty_sleep_s: float = 0.02):
+        """
+        句末后尽量排空声卡回调仍往队列里塞的旧块，避免下一轮 VAD 的 pre_buffer 混入上一句尾巴。
+        """
+        idle = 0
+        for _ in range(max_rounds):
+            try:
+                self._audio_buffer.get_nowait()
+                idle = 0
+            except queue.Empty:
+                idle += 1
+                if idle >= 4:
+                    break
+                time.sleep(empty_sleep_s)
     
     def detect_speech(self, audio_chunk: np.ndarray) -> bool:
         """检测是否有语音（由 VAD 后端实现）"""
         return self._vad.detect_speech(audio_chunk, self.config.sample_rate)
+
+    @staticmethod
+    def _speech_buffer_duration_sec(speech_buffer: list, sample_rate: int) -> float:
+        """已缓冲语音的大致时长（秒），用于句中防误切。"""
+        if not speech_buffer:
+            return 0.0
+        n = 0
+        for c in speech_buffer:
+            n += int(np.asarray(c).size)
+        return n / float(max(1, sample_rate))
+
+    def _effective_endpoint_silence_sec(self, vc: "VADConfig", speech_buffer: list) -> float:
+        """累计语音仍较短时用更长静音才判停，减轻句中换气被切成两句。"""
+        base = float(vc.silence_duration)
+        min_v = float(
+            getattr(vc, "min_voice_accum_sec_for_fast_endpoint", 0.0) or 0.0
+        )
+        mid_s = float(getattr(vc, "mid_utterance_silence_sec", 0.0) or 0.0)
+        if min_v <= 0 or mid_s <= 0:
+            return base
+        voice_accum = self._speech_buffer_duration_sec(
+            speech_buffer, self.config.sample_rate
+        )
+        if voice_accum < min_v:
+            eff = max(base, mid_s)
+            if eff > base:
+                log.debug(
+                    f"[VAD] 判停静音阈值延长至 {eff:.2f}s（已录≈{voice_accum:.2f}s < {min_v:.2f}s）"
+                )
+            return eff
+        return base
     
     def record_until_silence(
         self,
@@ -359,15 +452,23 @@ class AudioInput:
         if not self._is_listening:
             self.start_listening()
 
-        # 关键：清掉上一轮/空闲期间积压的旧音频，否则会“回放式”地先处理旧 chunk，导致延迟与误判
+        # 关键：清掉上一轮/空闲期间积压的旧音频，否则会"回放式"地先处理旧 chunk，导致延迟与误判
         flushed = self.flush_buffer()
         if flushed:
             log.debug(f"[AudioIO] flush_buffer: {flushed} chunks")
+
         # 每次录音前重置 VAD，避免噪声底噪/状态在多轮之间漂移
         try:
             self._vad.reset()
         except Exception:
             logger.debug("Failed to reset VAD state before recording", exc_info=True)
+
+        # 等待声卡驱动缓冲区排空（sounddevice 内部 ring buffer 常有数十 ms 残留）
+        # 然后二次清空，彻底消除上一轮语音残留
+        time.sleep(0.20)
+        flushed2 = self.flush_buffer()
+        if flushed2:
+            log.debug(f"[AudioIO] flush_buffer(2nd): {flushed2} chunks")
         
         speech_buffer = []
         is_speaking = False
@@ -378,7 +479,9 @@ class AudioInput:
         consecutive_speech = 0
         hangover_remaining = 0
         pre_buffer = deque(maxlen=vc.pre_buffer_chunks)
-        
+        tail_pad_active = False
+        tail_pad_deadline: Optional[float] = None
+
         while self._is_listening:
             # 检查外部取消
             if cancel_event and cancel_event.is_set():
@@ -421,6 +524,10 @@ class AudioInput:
                         on_speech_start()
                 
                 if is_speaking:
+                    # 句中再次出现语音：取消句尾缓冲计时，避免短静音误用旧的 silence_start
+                    silence_start = None
+                    tail_pad_active = False
+                    tail_pad_deadline = None
                     speech_buffer.append(chunk)
                     if on_chunk:
                         on_chunk(chunk)
@@ -444,17 +551,48 @@ class AudioInput:
                     
                     if silence_start is None:
                         silence_start = current_time
-                    elif current_time - silence_start > vc.silence_duration:
-                        # 静音超过阈值，语音结束
-                        log.debug(f"[VAD] 语音结束 (时长 {current_time - start_time:.1f}s)")
-                        if on_speech_end and speech_buffer:
-                            full_audio = np.concatenate(speech_buffer)
-                            on_speech_end(full_audio)
-                        break
+                        tail_pad_active = False
+                        tail_pad_deadline = None
+                    elif tail_pad_active:
+                        if tail_pad_deadline is not None and current_time >= tail_pad_deadline:
+                            log.debug(
+                                f"[VAD] 语音结束 (句尾缓冲后 {current_time - start_time:.1f}s)"
+                            )
+                            if on_speech_end and speech_buffer:
+                                full_audio = np.concatenate(speech_buffer)
+                                on_speech_end(full_audio)
+                            break
+                    elif current_time - silence_start > self._effective_endpoint_silence_sec(
+                        vc, speech_buffer
+                    ):
+                        # 静音已达判停阈值：再进入句尾缓冲，收录弱语气词等
+                        tail_pad = float(
+                            getattr(vc, "endpoint_tail_padding_sec", 0.48) or 0.0
+                        )
+                        if tail_pad > 0:
+                            tail_pad_active = True
+                            tail_pad_deadline = current_time + tail_pad
+                            log.debug(
+                                f"[VAD] 已达静音判停，句尾再录 {tail_pad:.2f}s"
+                            )
+                        else:
+                            log.debug(
+                                f"[VAD] 语音结束 (时长 {current_time - start_time:.1f}s)"
+                            )
+                            if on_speech_end and speech_buffer:
+                                full_audio = np.concatenate(speech_buffer)
+                                on_speech_end(full_audio)
+                            break
                 else:
                     # 未开始说话，保存到预缓冲
                     pre_buffer.append(chunk)
-        
+
+        # 句末后再排一队尾块，减轻「下一句 pre_buffer 吃到上一句」的串音
+        try:
+            self._drain_straggler_audio_chunks()
+        except Exception as e:
+            log.debug(f"[AudioIO] drain stragglers: {e}")
+
         return np.concatenate(speech_buffer) if speech_buffer else None
 
 

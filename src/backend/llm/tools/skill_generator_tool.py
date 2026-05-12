@@ -380,6 +380,23 @@ class SkillGeneratorTool(BaseTool):
         # 转换为首字母大写
         return ''.join(word.capitalize() for word in words if word)
 
+    @staticmethod
+    def _safe_template_substitute(template: str, **mapping: str) -> str:
+        """Safe string substitution that handles { and } in values.
+
+        Converts {key} placeholders to $key and uses string.Template
+        for safe substitution — literal braces in values pass through unchanged.
+        """
+        import string
+
+        # Convert {key} placeholders to $key for Template
+        converted = template
+        for k in mapping:
+            converted = converted.replace("{" + k + "}", "$" + k)
+
+        tmpl = string.Template(converted)
+        return tmpl.safe_substitute(mapping)
+
     def _create_tool_file(self, tool_name: str, tool_type: str, description: str) -> Dict[str, Any]:
         """创建工具文件"""
         class_name = self._to_class_name(tool_name)
@@ -397,12 +414,13 @@ class SkillGeneratorTool(BaseTool):
         # 获取模板
         template = TOOL_TEMPLATES.get(tool_type, TOOL_TEMPLATES["simple"])["template"]
 
-        # 替换模板变量
-        code = template.format(
+        # Safe substitution — handles { and } in description
+        code = self._safe_template_substitute(
+            template,
             class_name=class_name,
             tool_name=self._normalize_tool_name(tool_name),
             tool_description=description,
-            class_doc=f"{description}\n\n自动生成工具"
+            class_doc=f"{description}\n\n自动生成工具",
         )
 
         # 写入文件
@@ -477,11 +495,12 @@ result = tool.execute(param_name="参数值")
 
                 class_name = self._to_class_name(tool_name)
                 template = TOOL_TEMPLATES.get(tool_type, TOOL_TEMPLATES["simple"])["template"]
-                code = template.format(
+                code = self._safe_template_substitute(
+                    template,
                     class_name=class_name,
                     tool_name=self._normalize_tool_name(tool_name),
                     tool_description=description,
-                    class_doc=f"{description}\n\n自动生成工具"
+                    class_doc=f"{description}\n\n自动生成工具",
                 )
                 return ToolResult(success=True, data={"code": code})
 

@@ -11,7 +11,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QDialog, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton, QLabel, QWidget
 from PyQt6.QtGui import QAction, QIcon
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 
 from core.log import log, set_debug
 from gui.main_window import MainWindow
@@ -54,6 +54,10 @@ class Launcher:
         # 对话管理器
         self._conversation_manager = None
         self._conversation_thread = None
+        # 文字模式：与 Live2D 类似的独立悬浮输入条（不用设置窗口里的聊天面板）
+        self._standalone_text_dialog = None
+        self._text_input_open_pending = False
+        self._text_input_open_attempts = 0
         
         # Check and start MongoDB service first
         self.ensure_mongodb_service()
@@ -65,8 +69,10 @@ class Launcher:
         except Exception as e:
             logger.debug(f"SSH tunnel init failed: {e}")
 
-        # Initialize MainWindow but don't show it yet
-        self.main_window = MainWindow(show_chat=self.enable_conversation)
+        # Initialize MainWindow but don't show it yet（纯文字模式不嵌聊天区，避免与独立悬浮输入重复）
+        self.main_window = MainWindow(
+            show_chat=self.enable_conversation and not self.text_only
+        )
 
         # GUI 配置保存时触发热更新
         self.main_window.config_saved.connect(self._on_gui_config_saved)
@@ -88,6 +94,10 @@ class Launcher:
         # 启动对话系统
         if self.enable_conversation:
             self.start_conversation_system()
+            if self.text_only:
+                self._text_input_open_pending = True
+                self._text_input_open_attempts = 0
+                QTimer.singleShot(300, self._try_open_standalone_text_input)
 
         # Self-healing system initialization
         self._heal_event_bus = None
@@ -405,9 +415,9 @@ class Launcher:
                 }
 
                 def on_subtitle(text, is_final, emotion="neutral"):
-                    """AI 字幕回调 → WebSocket + GUI 聊天面板"""
-                    # 更新 GUI 聊天面板（通过信号，线程安全）
-                    if is_final and text and text.strip():
+                    """AI 字幕回调 → WebSocket +（非纯文字模式时）设置窗口内聊天面板"""
+                    # 纯文字模式用 Live2D / 悬浮条，不在设置窗口嵌聊天记录
+                    if is_final and text and text.strip() and not self.text_only:
                         try:
                             self.main_window.chat_message_received.emit(
                                 "玲", text.strip(), "#a5d6a7"
@@ -463,12 +473,8 @@ class Launcher:
                 # 初始化对话管理器
                 self._conversation_manager.initialize()
 
-                # 连接 GUI 聊天输入到对话管理器（线程安全信号 → queue）
-                if self.text_only:
-                    self.main_window.chat_text_submitted.connect(
-                        self._conversation_manager.submit_user_text
-                    )
-                
+                # 文字模式使用独立 TextInputDialog + WebSocket，不在设置窗口内嵌聊天输入
+
                 # 创建新的事件循环并运行异步对话系统
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
@@ -493,7 +499,6 @@ class Launcher:
         log.debug("对话系统已在后台启动")
 
         # 主线程轮询 exit_signal，确保从后台线程触发的退出能正确关闭 Qt
-        from PyQt6.QtCore import QTimer
         from core import exit_signal
         self._exit_poll_timer = QTimer()
         self._exit_poll_timer.timeout.connect(self._check_exit_signal)
@@ -558,14 +563,52 @@ class Launcher:
         self.main_window.raise_()
         self.main_window.activateWindow()
 
+    def _try_open_standalone_text_input(self):
+        """对话线程就绪后自动弹出独立文字输入条（主线程 QTimer）。"""
+        if not self._text_input_open_pending:
+            return
+        self._text_input_open_attempts += 1
+        # TTS/模型加载常需数十秒，过短会误报失败且用户提前输入会被丢弃（已由 preloop 缓冲兜底）
+        if self._text_input_open_attempts > 600:
+            self._text_input_open_pending = False
+            log.warning(
+                "[文字模式] 约 3 分钟内对话循环仍未就绪，未能自动弹出输入条；"
+                "请从托盘菜单选择「文字输入」。若已发送过文字，将在就绪后自动送出。"
+            )
+            return
+        if self._conversation_manager is None:
+            QTimer.singleShot(300, self._try_open_standalone_text_input)
+            return
+        loop = getattr(self._conversation_manager, "_loop", None)
+        if loop is None or not loop.is_running():
+            # initialize() 与 run_async() 首行设置 _loop 之间存在间隙，过早打开会丢首条输入
+            QTimer.singleShot(300, self._try_open_standalone_text_input)
+            return
+        self._text_input_open_pending = False
+        self._ensure_standalone_text_dialog(show=True)
+        log.info("[文字模式] 已打开独立文字输入条（与设置窗口分离，类 Live2D 悬浮层）。")
+
+    def _ensure_standalone_text_dialog(self, show: bool = True):
+        """创建或复用独立 TextInputDialog。"""
+        if self._conversation_manager is None:
+            return None
+        if self._standalone_text_dialog is None:
+            self._standalone_text_dialog = TextInputDialog(
+                self._conversation_manager, parent=None
+            )
+        if show:
+            self._standalone_text_dialog.show()
+            self._standalone_text_dialog.raise_()
+            self._standalone_text_dialog.activateWindow()
+        return self._standalone_text_dialog
+
     def show_text_input_dialog(self):
-        """显示文字输入对话框"""
+        """显示独立文字输入对话框（托盘菜单；与设置窗口分离）。"""
         if self._conversation_manager is None:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.warning(None, "提示", "对话系统未启动，请先启动对话系统。")
             return
-        dlg = TextInputDialog(self._conversation_manager, parent=None)
-        dlg.show()
+        self._ensure_standalone_text_dialog(show=True)
         
     def start_live2d(self):
         project_root = Path(__file__).parent.parent.parent
@@ -790,6 +833,13 @@ class Launcher:
             log.debug("正在关闭 MongoDB...")
             self._stop_mongodb_process()
         
+        if self._standalone_text_dialog is not None:
+            try:
+                self._standalone_text_dialog.close()
+            except Exception:
+                pass
+            self._standalone_text_dialog = None
+
         # 关闭主窗口
         if self.main_window:
             self.main_window.close()

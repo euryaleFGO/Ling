@@ -124,6 +124,18 @@ class RemoteASRClient:
         Returns:
             识别文本
         """
+        audio = np.asarray(audio, dtype=np.float32)
+        if audio.ndim > 1:
+            audio = np.mean(audio, axis=-1)
+        audio = audio.reshape(-1)
+        # 过短整段易触发远端 FunASR/VAD 路径异常；打断后常见几十 ms 噪声
+        min_samples = max(800, int(sample_rate * 0.05))
+        if audio.size < min_samples:
+            log.debug(
+                f"[远程ASR] 音频过短 ({audio.size} < {min_samples} samples)，跳过识别"
+            )
+            return ""
+
         max_retries = 3
         for attempt in range(max_retries):
             try:

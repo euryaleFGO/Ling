@@ -21,6 +21,7 @@ from .auto_fix_tool import AutoFixTool
 from .code_modify_tool import CodeModifyTool
 from .speaker_manage_tool import SpeakerManageTool
 from .song_tool import SongTool
+from .web_search_tool import WebSearchTool
 
 __all__ = [
     "BaseTool",
@@ -46,4 +47,5 @@ __all__ = [
     "CodeModifyTool",
     "SpeakerManageTool",
     "SongTool",
+    "WebSearchTool",
 ]

@@ -503,6 +503,16 @@ class _FunASRWSClient:
             except queue.Empty:
                 break
         self._last_text = ""
+        # 长连接上每轮必须显式声明「又开始说话」，否则服务端会把本轮 PCM 接在上一轮缓冲后，
+        # 表现为下一句识别开头粘上句尾（如「得到我吗」+「你好」）。
+        if self._connected and self._ws is not None and self._loop is not None:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._ws.send(json.dumps({"is_speaking": True})),
+                    self._loop,
+                ).result(timeout=2)
+            except Exception as e:
+                self._log.debug(f"[ASR-WS] 发送 is_speaking:true 失败: {e}")
 
     def feed_audio(self, chunk: np.ndarray) -> str:
         """发送音频块（非阻塞），返回当前累积结果"""

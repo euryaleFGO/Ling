@@ -420,32 +420,69 @@ class ComponentInitMixin:
     # -- Init: SER (Speech Emotion Recognition) ----------------------------
 
     def _init_ser(self: "AsyncConversationManager"):
-        """初始化语音情绪识别引擎"""
+        """初始化语音情绪识别引擎（优先远程，降级本地）"""
         if not getattr(self.config, 'ser', None) or not self.config.ser.enable:
             return
+        ser_cfg = self.config.ser
+
+        # 尝试远程 SER
+        remote_url = getattr(ser_cfg, 'remote_url', '')
+        if remote_url:
+            try:
+                from core.ser_engine import RemoteSERClient
+                client = RemoteSERClient(base_url=remote_url)
+                if client.health_check():
+                    self._ser = client
+                    log.info(f"[conversation] SER engine initialized (remote: {remote_url})")
+                    return
+                else:
+                    log.warning(f"[conversation] SER remote health check failed: {remote_url}")
+                    client.close()
+            except Exception as e:
+                log.warning(f"[conversation] SER remote init failed: {e}")
+
+        # 降级到本地 SER
         try:
             from core.ser_engine import SEREngine
             self._ser = SEREngine(
-                model_id=self.config.ser.model_id,
-                device=self.config.ser.device,
+                model_id=ser_cfg.model_id,
+                device=ser_cfg.device,
             )
-            log.info("[conversation] SER engine initialized")
+            log.info("[conversation] SER engine initialized (local)")
         except Exception as e:
             log.warning(f"[conversation] SER init failed: {e}")
 
     # -- Init: Punc (punctuation restoration) -----------------------------
 
     def _init_punc(self: "AsyncConversationManager"):
-        """Initialize punctuation restoration engine."""
+        """Initialize punctuation restoration engine (remote first, local fallback)."""
         self._punc = None
         punc_cfg = getattr(self.config, 'punc', None)
         if not punc_cfg or not punc_cfg.enable:
             return
+
+        # 尝试远程 PUNC
+        remote_url = getattr(punc_cfg, 'remote_url', '')
+        if remote_url:
+            try:
+                from core.punc_engine import RemotePuncEngine
+                client = RemotePuncEngine(base_url=remote_url)
+                if client.health_check():
+                    self._punc = client
+                    log.info(f"[conversation] Punc engine initialized (remote: {remote_url})")
+                    return
+                else:
+                    log.warning(f"[conversation] Punc remote health check failed: {remote_url}")
+                    client.close()
+            except Exception as e:
+                log.warning(f"[conversation] Punc remote init failed: {e}")
+
+        # 降级到本地
         try:
             from core.punc_engine import PuncEngine
             model_id = punc_cfg.model_id or None
             self._punc = PuncEngine(model_id=model_id, device=punc_cfg.device)
-            log.info("[conversation] Punc engine initialized")
+            log.info("[conversation] Punc engine initialized (local)")
         except Exception as e:
             log.warn(f"[conversation] Punc init failed: {e}")
             self._punc = None
@@ -462,23 +499,43 @@ class ComponentInitMixin:
             return
 
         try:
-            from core.sv_engine import SVEngine
             from core.voiceprint_database import VoiceprintDatabase
             from core.diarization_engine import DiarizationEngine
             from core.speaker_manager import SpeakerManager
 
-            # 1. 初始化声纹引擎
-            sv_device = self.config.diarization.device
-            if sv_device == "auto":
-                try:
-                    import torch
-                    sv_device = "cuda:0" if torch.cuda.is_available() else "cpu"
-                except Exception:
-                    sv_device = "cpu"
+            # 1. 初始化声纹引擎（优先远程）
+            sv_cfg = self.config.sv if hasattr(self.config, 'sv') else None
+            sv_remote_url = getattr(sv_cfg, 'remote_url', '') if sv_cfg else ''
 
-            sv_model = self.config.diarization.model_id or "iic/speech_campplus_sv_zh-cn_16k-common"
-            self._sv = SVEngine(model_id=sv_model, device=sv_device)
-            log.info(f"[conversation] SVEngine ready (model={sv_model}, device={sv_device})")
+            # 远程 SV 成功时不会进入下方本地分支，仍需为 DiarizationEngine 提供 device 字符串
+            sv_device = (self.config.diarization.device or "auto").strip()
+
+            if sv_remote_url:
+                try:
+                    from core.sv_engine import RemoteSVEngine
+                    client = RemoteSVEngine(base_url=sv_remote_url)
+                    if client.health_check():
+                        self._sv = client
+                        log.info(f"[conversation] SVEngine ready (remote: {sv_remote_url})")
+                    else:
+                        log.warning(f"[conversation] SV remote health check failed: {sv_remote_url}")
+                        client.close()
+                        self._sv = None
+                except Exception as e:
+                    log.warning(f"[conversation] SV remote init failed: {e}")
+                    self._sv = None
+
+            if self._sv is None:
+                from core.sv_engine import SVEngine
+                if sv_device == "auto":
+                    try:
+                        import torch
+                        sv_device = "cuda:0" if torch.cuda.is_available() else "cpu"
+                    except Exception:
+                        sv_device = "cpu"
+                sv_model = self.config.diarization.model_id or "iic/speech_campplus_sv_zh-cn_16k-common"
+                self._sv = SVEngine(model_id=sv_model, device=sv_device)
+                log.info(f"[conversation] SVEngine ready (local, model={sv_model}, device={sv_device})")
 
             # 2. 初始化声纹数据库
             storage_path = self.config.diarization.storage_path
@@ -543,6 +600,28 @@ class ComponentInitMixin:
                 audio,
                 sample_rate=self.config.audio.sample_rate,
             )
+
+            reason = (result.reason or "").strip()
+            # 超时/过短/错误/降级时 speaker_id 可能是「上一次的 last」，并非本轮匹配结果，
+            # 若仍写入 user_id 会误报「Speaker changed: 昆伦 -> xxx (score=0.000)」。
+            if reason.startswith(
+                ("timeout:", "error:", "temporarily_disabled", "audio_too_short")
+            ):
+                log.debug(
+                    f"[conversation] speaker identify non-authoritative ({reason}), "
+                    f"keep user_id={self._current_user_id}"
+                )
+                return None
+
+            # new_unknown_registered 会带 score=0；matched 若分数为 0 视为异常，不切换用户
+            if (
+                result.score <= 0
+                and not reason.startswith("new_unknown_registered")
+            ):
+                log.debug(
+                    f"[conversation] speaker identify ignored (score<=0, reason={reason})"
+                )
+                return None
 
             if result.speaker_id and result.speaker_id != "unknown":
                 old_user_id = self._current_user_id

@@ -58,7 +58,7 @@ class ConversationConfig:
     # ---- 音频 / VAD 配置 ----
     sample_rate: int = 16000
     silence_threshold: float = 0.01
-    silence_duration: float = 0.6            # 静音多久认为说完
+    silence_duration: float = 1.0            # 静音多久认为说完（中文长句建议 ≥1.0s）
     vad_backend: str = "rms"                 # "rms" | "silero"
     vad_preset: str = "balanced"             # "aggressive" | "balanced" | "conservative"
     vad_threshold: float = 0.5               # 异步管理器使用的 VAD 阈值

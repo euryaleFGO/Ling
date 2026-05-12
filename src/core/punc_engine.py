@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -94,3 +95,49 @@ class PuncEngine:
         except Exception as e:
             logger.debug(f"[PUNC] punctuation failed: {e}")
             return text
+
+
+class RemotePuncEngine:
+    """远程标点恢复客户端（HTTP）。"""
+
+    def __init__(self, base_url: str = "http://localhost:5003", timeout: int = 30):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self._session = None
+
+    def _ensure_session(self):
+        if self._session is not None: return
+        import requests
+        self._session = requests.Session()
+
+    def add_punctuation(self, text: str) -> str:
+        if not text or not text.strip(): return text
+        self._ensure_session()
+        last_err = None
+        for attempt in range(3):
+            try:
+                resp = self._session.post(
+                    f"{self.base_url}/punc/add",
+                    json={"text": text.strip()},
+                    timeout=self.timeout,
+                )
+                resp.raise_for_status()
+                return resp.json().get("text", text)
+            except Exception as e:
+                last_err = e
+                if attempt < 2: time.sleep(0.5 * (attempt + 1))
+        logger.warning(f"[PUNC-Remote] retries failed: {last_err}")
+        return text
+
+    def health_check(self) -> bool:
+        self._ensure_session()
+        try:
+            resp = self._session.get(f"{self.base_url}/health", timeout=5)
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+    def close(self):
+        if self._session:
+            self._session.close()
+            self._session = None

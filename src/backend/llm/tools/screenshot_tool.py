@@ -5,6 +5,7 @@
 from typing import List, Optional
 from datetime import datetime
 import os
+import re
 
 from .base_tool import BaseTool, ToolParameter, ToolResult
 
@@ -46,20 +47,32 @@ class ScreenshotTool(BaseTool):
             )
         ]
     
+    @staticmethod
+    def _sanitize_filename(filename: str) -> str:
+        """Strip path separators to prevent directory traversal."""
+        # Remove any directory components
+        filename = os.path.basename(filename)
+        # Remove any remaining dangerous characters
+        filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+        return filename
+
     def execute(self, filename: str = "") -> ToolResult:
         """执行截图"""
         try:
             import pyautogui
-            
+
             # 生成文件名
             if not filename:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"screenshot_{timestamp}.png"
-            
+
+            # Sanitize to prevent path traversal
+            filename = self._sanitize_filename(filename)
+
             # 确保有扩展名
             if not filename.endswith(('.png', '.jpg', '.jpeg')):
                 filename += '.png'
-            
+
             # 完整路径
             save_path = os.path.join(self._default_save_dir, filename)
             

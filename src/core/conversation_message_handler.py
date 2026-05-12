@@ -142,7 +142,7 @@ class MessageHandlerMixin:
         self._last_speaker_embedding = None
 
         asr_type = type(self._asr).__name__
-        log.info(f"Please speak ... [ASR: {asr_type}]")
+        log.debug(f"[ASR] listen start [{asr_type}]")
 
         t_start = time.monotonic()
         t_first_chunk = None
@@ -318,11 +318,23 @@ class MessageHandlerMixin:
         queue = self._user_text_queue
         if queue is None:
             return
+        t = (text or "").strip()
+        if not t:
+            return
         loop = getattr(self, '_loop', None)
         if loop and loop.is_running():
-            loop.call_soon_threadsafe(queue.put_nowait, text)
+            loop.call_soon_threadsafe(queue.put_nowait, t)
+            return
+        buf = getattr(self, "_preloop_user_text_buffer", None)
+        lock = getattr(self, "_preloop_user_text_lock", None)
+        if buf is not None and lock is not None:
+            with lock:
+                buf.append(t)
+            log.info(
+                "[conversation] 事件循环尚未就绪，用户文字已暂存，对话启动后将自动发送"
+            )
         else:
-            log.warning("[conversation] submit_user_text: no running loop, message dropped")
+            log.warning("[conversation] submit_user_text: no queue/lock, message dropped")
 
     # -- Streaming text helpers ---------------------------------------------
 

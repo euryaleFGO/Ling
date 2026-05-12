@@ -25,12 +25,10 @@ class CameraCaptureTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return """打开摄像头拍一张照片并保存。
-当用户说以下内容时使用：
-- 打开摄像头拍照
-- 帮我拍张照
-- 用摄像头拍一张
-- 拍个照看看"""
+        return """打开本机摄像头拍照并保存到 data/camera。
+当用户要打开摄像头、拍照、拍张照、打开摄像等时使用。
+语音识别可能把「说吧」听成「闻吧」、「帮我」听成「屏报」；只要语义是「用摄像头拍」就调用本工具。
+用户要「截屏/截桌面/分析当前窗口」时用 screenshot_analyze，不要用网络搜索。"""
 
     @property
     def parameters(self) -> List[ToolParameter]:
@@ -51,6 +49,14 @@ class CameraCaptureTool(BaseTool):
             ),
         ]
 
+    @staticmethod
+    def _sanitize_filename(filename: str) -> str:
+        """Strip path separators to prevent directory traversal."""
+        filename = os.path.basename(filename)
+        import re
+        filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+        return filename
+
     def execute(self, filename: str = "", camera_index: int = 0) -> ToolResult:
         try:
             import cv2
@@ -64,6 +70,9 @@ class CameraCaptureTool(BaseTool):
         if not filename:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"camera_{timestamp}.jpg"
+
+        # Sanitize to prevent path traversal
+        filename = self._sanitize_filename(filename)
 
         if not filename.lower().endswith((".png", ".jpg", ".jpeg")):
             filename += ".jpg"

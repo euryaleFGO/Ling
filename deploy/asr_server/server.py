@@ -119,11 +119,19 @@ class ASREngine:
             "device": self.config.device,
             "disable_update": self.config.disable_update,
         }
-        if self.config.use_vad and self.config.vad_model:
+        # 整段 HTTP 识别不要挂 vad_model：FunASR 在 inference_with_vad + CPU 分支会把
+        # batch_size 置 0，触发 "batch_size must be set 1"（短音频、打断后尤其易现）。
+        # 客户端已用本地 VAD 切段，此处直接对整段 wav 做离线推理即可。
+        use_vad_offline = os.environ.get("ASR_OFFLINE_USE_VAD", "0").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if use_vad_offline and self.config.use_vad and self.config.vad_model:
             kwargs["vad_model"] = self.config.vad_model
             kwargs["vad_kwargs"] = {"max_single_segment_time": 60000}
         self._model_offline = AutoModel(**kwargs)
-        logging.info("[ASR] Offline model loaded")
+        logging.info("[ASR] Offline model loaded (vad=%s)", use_vad_offline)
 
     def recognize_audio(self, audio: np.ndarray, sample_rate: int = 16000, hotwords: str = "") -> str:
         """离线识别整段音频"""
@@ -238,6 +246,7 @@ def get_engine() -> ASREngine:
         device = os.environ.get("ASR_DEVICE", "auto")
         if device == "auto":
             device = _detect_device()
+        logging.info(f"[ASR] 使用设备: {device} (环境变量 ASR_DEVICE={os.environ.get('ASR_DEVICE', '未设置')})")
         config = ASRConfig(device=device)
         _engine = ASREngine(config)
         # 预加载模型

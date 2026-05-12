@@ -8,7 +8,7 @@
     --debug, -d     调试模式
     --no-voice      禁用语音对话（仅 GUI）
     --text          纯文本对话模式（控制台，无 GUI）
-    --text-gui      文字输入模式（GUI + 终端文字对话，不使用麦克风）
+    --text-gui      文字输入模式（Live2D + 独立悬浮文字条 + 托盘，不在设置窗口内聊天）
 
 使用示例:
     python main.py              # 完整模式（GUI + 语音对话）
@@ -150,7 +150,7 @@ def main():
     else:
         # GUI 模式
         if text_gui_mode:
-            print("模式: GUI + 终端文字输入对话")
+            print("模式: Live2D + 独立悬浮文字输入（麦克风关闭）")
         elif no_voice:
             print("模式: GUI（无对话）")
         else:

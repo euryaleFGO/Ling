@@ -683,10 +683,16 @@ public class SpeechBubble {
                         String newState = json.get("state").getAsString();
                         conversationState.set(newState);
                         if ("idle".equals(newState)) {
+                            // 从此时起计时，idle 满 MESSAGE_TIMEOUT_MS 后淡出（见 update()）
                             idleSinceTime = System.currentTimeMillis();
-                        } else {
-                            idleSinceTime = 0;  // 非 idle 时重置，字幕保持显示
+                        } else if ("processing".equals(newState)
+                                || "speaking".equals(newState)
+                                || "paused".equals(newState)) {
+                            // AI 处理/播报/暂停：停止淡出计时，字幕保持
+                            idleSinceTime = 0;
                         }
+                        // listening：不重置 idleSinceTime。Python 在 idle 后会立刻发 listening，
+                        // 若此处清零则「idle 后 10 秒淡出」永远无法触发，字幕会一直挂到下一句。
                     }
                 }
                 case "clear" -> clearMessage();

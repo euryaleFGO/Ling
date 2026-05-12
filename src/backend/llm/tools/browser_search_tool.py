@@ -82,6 +82,7 @@ class BrowserSearchTool(BaseTool):
 重要：此工具用于搜索互联网，不是在本地项目中搜索文件！
 - 如果用户说"搜一下项目是否用了XXX"、"在代码中搜索"，应该使用 terminal_execute 工具（grep/findstr）
 - 只有当用户明确要搜索网络信息时才使用此工具
+- 用户要打开摄像头、拍照、截图、截屏时禁止使用本工具，应使用 camera_capture 或 screenshot_analyze
 
 此工具会打开 Edge 浏览器，自动在 Bing 搜索引擎中搜索，并提取搜索结果或网页内容。
 支持实时检测和处理人机验证（滑块、点击验证等）。"""

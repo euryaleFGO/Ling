@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import logging
 import os
+import base64
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -142,4 +144,69 @@ class SEREngine:
         score = float(top.get("score", 0.0) or 0.0)
         mapped = self.label_map.get(raw_label.lower(), "neutral")
         return SERResult(label=raw_label, score=score, emotion9=mapped, reason=f"hf:{self.model_id}")
+
+
+class RemoteSERClient:
+    """远程 SER 服务客户端（HTTP）。"""
+
+    def __init__(self, base_url: str = "http://localhost:5003", timeout: int = 30):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self._session = None
+
+    def _ensure_session(self):
+        if self._session is not None:
+            return
+        import requests
+        self._session = requests.Session()
+
+    def predict(self, audio: np.ndarray, sample_rate: int = 16000) -> SERResult:
+        self._ensure_session()
+        # 归一化为 float32
+        if audio.dtype == np.int16:
+            audio_f32 = (audio.astype(np.float32) / 32768.0).reshape(-1)
+        else:
+            audio_f32 = audio.astype(np.float32).reshape(-1)
+            m = float(np.max(np.abs(audio_f32))) if audio_f32.size else 0.0
+            if m > 2.0:
+                audio_f32 = audio_f32 / 32768.0
+
+        audio_b64 = base64.b64encode(audio_f32.tobytes()).decode("ascii")
+
+        last_err = None
+        for attempt in range(3):
+            try:
+                resp = self._session.post(
+                    f"{self.base_url}/ser/predict",
+                    json={"audio": audio_b64, "sample_rate": sample_rate},
+                    timeout=self.timeout,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return SERResult(
+                    label=data.get("label", "neutral"),
+                    score=float(data.get("score", 0.0)),
+                    emotion9=data.get("emotion9", "neutral"),
+                    reason=f"remote:{self.base_url}",
+                )
+            except Exception as e:
+                last_err = e
+                if attempt < 2:
+                    time.sleep(0.5 * (attempt + 1))
+
+        logger.warning(f"[SER-Remote] all retries failed: {last_err}")
+        return SERResult(label="neutral", score=0.0, emotion9="neutral", reason="remote_failed")
+
+    def health_check(self) -> bool:
+        self._ensure_session()
+        try:
+            resp = self._session.get(f"{self.base_url}/health", timeout=5)
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+    def close(self):
+        if self._session:
+            self._session.close()
+            self._session = None
 

@@ -5,6 +5,7 @@ Agent 核心
 from typing import Optional, List, Dict, Generator, Any, Callable
 import logging
 import json
+import re
 import time
 import threading
 import queue
@@ -21,7 +22,7 @@ from ..memory.entity_extractor import get_entity_extractor
 from ..rag import get_rag_pipeline, RAGConfig
 from ..database.knowledge_dao import get_knowledge_dao
 from .tool_manager import ToolManager
-from ..tools import DateTimeTool, MemoryTool, SummaryTool, BrowserSearchTool, VisionTool, ScreenshotAnalyzeTool, ReminderTool, Live2DMotionTool, ExitAppTool, CameraCaptureTool, TerminalExecuteTool, SkillGeneratorTool, DiagnoseTool, AutoFixTool, CodeModifyTool, SpeakerManageTool, SongTool
+from ..tools import DateTimeTool, MemoryTool, SummaryTool, BrowserSearchTool, VisionTool, ScreenshotAnalyzeTool, ReminderTool, Live2DMotionTool, ExitAppTool, CameraCaptureTool, TerminalExecuteTool, SkillGeneratorTool, DiagnoseTool, AutoFixTool, CodeModifyTool, SpeakerManageTool, SongTool, WebSearchTool
 from ..tools.base_tool import BaseTool, ToolResult
 from ..utils.logging_config import setup_logging, get_logger, log_llm_request, log_llm_response, log_error
 
@@ -36,6 +37,32 @@ except ImportError:
 # 初始化日志
 setup_logging(level=logging.DEBUG, log_file=True, console=False)
 logger = get_logger("agent")
+
+# 与「本机摄像头 / 截图」意图冲突时，从本轮工具列表中剔除的网络检索类工具名
+_NET_SEARCH_TOOL_NAMES = frozenset({
+    "web_search",
+    "browser_search",
+    "browser_read",
+    "browser_extract",
+    "browser_deep_search",
+})
+
+# 用户话里像在说本地拍照/截图（兼容 ASR 错字：闻吧→说吧、屏报→帮报 等）
+_LOCAL_CAMERA_OR_SCREEN_HINT = re.compile(
+    r"(截(图|屏)|截图|截屏|拍照|照相|摄像头|摄像机|打开摄|打开.{0,2}相机|"
+    r"拍张|拍个照|截个|帮.{0,4}截|屏报.{0,12}摄|闻吧.{0,14}截|帮我打开摄像|打开摄像)"
+)
+# 明确只要上网查资料时，不要当作本地摄像头意图
+_EXPLICIT_WEB_ONLY_HINT = re.compile(
+    r"(上网搜|网上搜|搜一下.{0,8}新闻|百度一下|谷歌一下|查一下.{0,6}资料|浏览器.{0,4}打开)"
+)
+
+
+def _user_sounds_like_local_camera_intent(text: str) -> bool:
+    t = (text or "").strip()
+    if not t or _EXPLICIT_WEB_ONLY_HINT.search(t):
+        return False
+    return bool(_LOCAL_CAMERA_OR_SCREEN_HINT.search(t))
 
 
 class SpeakerStatsTool(BaseTool):
@@ -104,7 +131,7 @@ class Agent:
     MAX_TOOL_CALLS = 5  # 单次对话最大工具调用次数
 
     # 耗时工具列表（这些工具应该后台执行）
-    BACKGROUND_TOOLS = {"browser_search", "browser_read", "browser_extract", "browser_deep_search"}
+    BACKGROUND_TOOLS = {"browser_search", "browser_read", "browser_extract", "browser_deep_search", "web_search"}
     
     def __init__(
         self,
@@ -180,11 +207,14 @@ class Agent:
         # keep_alive=True 表示操作完成后保持浏览器打开5秒，方便查看结果
         # filter_ads=True 表示自动过滤广告结果
         self._tool_manager.register(BrowserSearchTool(
-            headless=False, 
-            manual_captcha=True, 
+            headless=False,
+            manual_captcha=True,
             keep_alive=True,
             filter_ads=True
         ))
+
+        # 注册轻量级 Web 搜索工具（DuckDuckGo，无需浏览器）
+        self._tool_manager.register(WebSearchTool())
         
         # 注册截图工具
         from ..tools import ScreenshotTool
@@ -268,7 +298,7 @@ class Agent:
         self._is_unknown_speaker = is_unknown
         # 同步更新到 tool
         if self._speaker_manage_tool:
-            self._speaker_manage_tool._current_speaker_id = speaker_id
+            self._speaker_manage_tool.set_current_speaker(speaker_id)
 
     def set_emotion_context(self, emotion_text: str):
         """设置用户情绪上下文（由 AsyncConversationManager 调用）"""
@@ -342,6 +372,17 @@ class Agent:
     def _should_run_in_background(self, tool_name: str) -> bool:
         """判断工具是否应该后台执行"""
         return tool_name in self.BACKGROUND_TOOLS
+
+    def _filter_misrouted_web_search_tools(self, user_message: str, tool_calls: List) -> list:
+        """ASR 错字时模型易把「截个图/开摄像」误判成 web_search；在此类用户文本下剔除网络检索工具。"""
+        if not tool_calls or not _user_sounds_like_local_camera_intent(user_message):
+            return list(tool_calls)
+        kept = [tc for tc in tool_calls if tc.function.name not in _NET_SEARCH_TOOL_NAMES]
+        if len(kept) < len(tool_calls):
+            logger.info(
+                f"已根据「本机摄像头/截图」意图移除误触发的网络检索工具 ({len(tool_calls) - len(kept)} 个)"
+            )
+        return kept
 
     def summarize_background_results(self, results: List[Dict]) -> str:
         """让 LLM 总结后台任务的结果
@@ -538,7 +579,7 @@ class Agent:
         # 7. 当前说话人信息
         if self._current_speaker_id:
             if self._is_unknown_speaker:
-                parts.append(f"\n当前说话人是未注册用户 {self._current_speaker_id}。如果用户在对话中说出了自己的名字，请使用 manage_speaker 工具将其注册为真实名字。不要主动反复询问用户的名字，只在用户自然提到时处理。")
+                parts.append(f"\n当前说话人是未注册用户 {self._current_speaker_id}（声纹未匹配到任何人）。这是你第一次见到这个人，请自然地打招呼并询问对方是谁。如果用户说出了自己的名字，请使用 manage_speaker 工具将其注册为真实名字。不要反复追问名字，只在用户自然提到时处理。")
             else:
                 parts.append(f"\n当前说话人: {self._current_speaker_id}")
 
@@ -554,10 +595,12 @@ class Agent:
 当用户分享重要的个人信息时，使用记忆工具保存。
 当用户发送图片或询问图片内容时，使用视觉分析工具(vision_analyze)来理解图像。
 当需要分析屏幕截图时，使用截图分析工具(screenshot_analyze)来识别文字和界面元素。
-当用户明确表达结束会话/告别离开（如”你退下吧””你能自己关机吗””再见””拜拜””byebye””明天见””晚安””早点睡觉”）时，先调用 exit_app 工具，再给出简短告别语。
+当用户明确表达结束会话/告别离开（如"你退下吧""你能自己关机吗""再见""拜拜""byebye""明天见""晚安""早点睡觉"）时，先调用 exit_app 工具，再给出简短告别语。
 当用户要求添加新功能、创建自动化工具、扩展技能时，使用 skill_generator 工具生成新工具。
-当用户说出自己的名字时（如”我叫xxx”、”我是xxx”），使用 manage_speaker 工具将当前说话人注册为该名字。
+当用户说出自己的名字时（如"我叫xxx"、"我是xxx"），使用 manage_speaker 工具将当前说话人注册为该名字。
 当用户要求唱歌或想听歌时，使用 sing_song 工具。
+当用户要「打开摄像头、拍照、截图、截屏、帮我截个图」等本机操作时，必须调用 camera_capture 或 screenshot_analyze；语音识别可能把「说吧」听成「闻吧」、「帮我」听成「屏报」，仍按摄像头/截图处理。
+仅当用户明确要「上网搜索、查新闻、查资料、百度一下」等时才使用 web_search / browser_search；不要把打开摄像头误当成网络搜索。
 不要滥用工具，简单的闲聊不需要工具。""")
 
         # 9. TTS 友好输出（回复会用于语音合成，避免 Markdown/颜文字）
@@ -620,6 +663,7 @@ class Agent:
 
         logger.info(f"👤 用户消息: {message[:50]}{'...' if len(message) > 50 else ''}")
 
+        tool_router_redirects = 0
         while tool_call_count < self.MAX_TOOL_CALLS:
             # 检查是否被打断（线程安全）
             if self._interrupted.is_set():
@@ -641,6 +685,50 @@ class Agent:
 
             # 检查是否有工具调用
             if hasattr(assistant_message, 'tool_calls') and assistant_message.tool_calls:
+                raw_tcs = list(assistant_message.tool_calls)
+                effective_tcs = self._filter_misrouted_web_search_tools(message, raw_tcs)
+                if not effective_tcs and raw_tcs:
+                    if tool_router_redirects >= 2:
+                        logger.warning("工具路由纠正重试次数用尽，结束本轮工具循环")
+                        messages.append(
+                            {
+                                "role": "assistant",
+                                "content": assistant_message.content or "",
+                            }
+                        )
+                        hint = (
+                            "请用一句话告诉我：你是想「上网查资料/看新闻」，"
+                            "还是要「打开摄像头或截屏」？我可以分别用搜索或摄像头工具帮你。"
+                        )
+                        if stream:
+                            for ch in hint:
+                                yield ch
+                        else:
+                            yield hint
+                        full_response.append(hint)
+                        break
+                    tool_router_redirects += 1
+                    logger.info("工具路由纠正：模型误选网络搜索，已注入系统提示并重新推理")
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": assistant_message.content or "",
+                        }
+                    )
+                    messages.append(
+                        {
+                            "role": "system",
+                            "content": (
+                                "【系统-非常重要】用户上一条话里含有打开摄像头、拍照、截图、截屏等意图"
+                                "（语音识别常把「说吧」误成「闻吧」、「帮我」误成「屏报」等）。"
+                                "你必须调用 camera_capture 打开摄像头；需要分析屏幕内容时用 screenshot_analyze。"
+                                "在此场景下严禁调用 web_search、browser_search 及任何浏览器检索类工具。"
+                                "若本机无法打开摄像头，用文字说明原因，仍不要调用网络搜索。"
+                            ),
+                        },
+                    )
+                    continue
+
                 tool_call_count += 1
                 log_llm_response(True)
 
@@ -657,7 +745,7 @@ class Agent:
                                 "arguments": tc.function.arguments
                             }
                         }
-                        for tc in assistant_message.tool_calls
+                        for tc in effective_tcs
                     ]
                 })
 
@@ -665,7 +753,7 @@ class Agent:
                 background_tool_calls = []
                 foreground_tool_calls = []
 
-                for tc in assistant_message.tool_calls:
+                for tc in effective_tcs:
                     tool_name = tc.function.name
                     if self._should_run_in_background(tool_name):
                         background_tool_calls.append(tc)

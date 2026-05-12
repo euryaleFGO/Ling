@@ -80,6 +80,7 @@ class PuncConfig:
     enable: bool = True
     model_id: str = ""
     device: str = "auto"
+    remote_url: str = ""
 
 
 @dataclass
@@ -89,6 +90,7 @@ class SERConfig:
     model_id: str = ""
     device: str = "auto"
     min_audio_sec: float = 0.8
+    remote_url: str = ""
 
 
 @dataclass
@@ -101,6 +103,7 @@ class SVConfig:
     min_audio_sec: float = 0.8
     enroll_audio: str = ""
     reject_policy: str = "drop"
+    remote_url: str = ""
 
 
 @dataclass
@@ -137,7 +140,7 @@ class AudioConfig:
     """音频配置"""
     sample_rate: int = 16000
     silence_threshold: float = 0.01
-    silence_duration: float = 0.6
+    silence_duration: float = 1.0
     vad_backend: str = "rms"
     vad_preset: str = "balanced"
     use_vad: bool = True
@@ -221,6 +224,8 @@ class SSHTunnelConfig:
     remote_tts_port: int = 5001
     local_asr_port: int = 5002
     remote_asr_port: int = 5002
+    local_ser_port: int = 5003
+    remote_ser_port: int = 5003
 
 
 @dataclass

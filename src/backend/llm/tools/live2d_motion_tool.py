@@ -2,7 +2,7 @@
 Live2D 动作工具
 当用户说「做个挥手动作」「跳一下」等时，Agent 可调用此工具控制角色做相应动作
 """
-from typing import List
+from typing import List, Optional
 
 from .base_tool import BaseTool, ToolParameter, ToolResult
 
@@ -21,7 +21,7 @@ MOTION_ALIASES = {
 VALID_GROUPS = ["Idle", "Tap", "Tap@Body", "Flick", "FlickDown", "Flick@Body"]
 
 
-def resolve_motion(user_input: str) -> str | None:
+def resolve_motion(user_input: str) -> Optional[str]:
     """
     将用户说的动作描述解析为动作组名
     支持直接传 group 名或中文/自然语言描述

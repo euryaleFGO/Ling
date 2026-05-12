@@ -106,7 +106,8 @@ class SpeakerRecognitionMixin:
 
         Returns:
             (effective_text, should_continue, prompt_to_speak)
-            prompt_to_speak is non-empty when the caller should speak it.
+            prompt_to_speak is non-empty when the caller should speak it
+            (only used for registration success feedback, not for initial greeting).
         """
         if not self._speaker_manager:
             return user_text, True, ""
@@ -119,14 +120,13 @@ class SpeakerRecognitionMixin:
         if not self._pending_registration and not self._is_unknown_speaker(speaker_id):
             return user_text, True, ""
 
-        # Unknown speaker, start registration
-        if not self._pending_registration and speaker_id == "unknown":
+        # Unknown speaker: let LLM respond naturally (system prompt has unknown-speaker context)
+        if not self._pending_registration and self._is_unknown_speaker(speaker_id):
             self._pending_registration = True
             self._last_unknown_embedding = embedding.copy()
             self._pending_user_text = user_text  # 保存原话，注册后补发
-            prompt = getattr(speaker_recog_cfg, 'passive_prompt', '你好，我好像不认识你，请问你是谁呀？')
-            log.info(f"[speaker] unknown speaker, asking: {prompt}")
-            return "", False, prompt
+            log.info(f"[speaker] unknown speaker detected, forwarding to LLM")
+            return user_text, True, ""  # 交给 LLM 自行回复
 
         # In registration mode: try to extract name
         if self._pending_registration:

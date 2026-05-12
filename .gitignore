@@ -59,6 +59,7 @@ docs/
 
 # 工具脚本（默认不作为主项目发布内容；如需提交再删掉本条）
 tools/
+!src/backend/llm/tools/
 
 # 模型文件（太大，不应上传）
 models/
@@ -157,3 +158,28 @@ tmp/
 
 # Claude Code
 .claude/
+
+# Superpowers 规划工具产物
+.superpowers/
+
+# 根目录压缩包和部署产物
+*.tar.gz
+/asr_server_deploy.zip
+/ASR_DEPLOY_PACKAGE_README.md
+
+# 根目录临时/调试脚本
+/tmp_*.py
+/verify_*.py
+
+# 个人数据
+data/camera/
+data/voiceprints/
+
+# 个人学术文件
+论文/
+
+# SER 部署包
+deploy/ser_server/*.zip
+
+# 私密配置 — settings.json 必须忽略
+config/settings.json

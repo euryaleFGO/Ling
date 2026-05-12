@@ -39,6 +39,8 @@ class TurnState:
     last_motion_emotion: str | None = None
     current_emotion: str = "neutral"
     sentences_queued: int = 0
+    # 已与 TTS 播放对齐的字幕前缀（避免 LLM 流式先把整段字幕刷完）
+    spoken_subtitle: str = ""
 
 
 @dataclass
@@ -148,6 +150,8 @@ class TTSPipelineMixin:
                         t_first_chunk = time.monotonic()
                         t_first = t_first_chunk - state.t0
                         log.info(f"[{t_first:.2f}s] TTS cache-first-chunk: {item.text[:20]}...")
+                        cumulative = state.spoken_subtitle + item.text
+                        self._send_subtitle(cumulative, is_final=False, emotion=item.emotion)
                         await asyncio.to_thread(
                             self._audio_output.play_array, audio_data, sr, blocking=True
                         )
@@ -167,6 +171,7 @@ class TTSPipelineMixin:
                             chunk_count=1,
                         )
                         self._perf_monitor.record_tts(metrics)
+                        state.spoken_subtitle += item.text
                         continue
 
                 # ---- 真正的流式播放（P0-1: producer-consumer 队列）----
@@ -236,6 +241,11 @@ class TTSPipelineMixin:
                         log.info(
                             f"[{t_first:.2f}s] TTS first-chunk: "
                             f"{item.text[:20]}... -> idx={state.next_idx}"
+                        )
+                        # 首段音频即将播放时再推字幕，避免合成排队阶段字幕已跑完
+                        cumulative = state.spoken_subtitle + item.text
+                        self._send_subtitle(
+                            cumulative, is_final=False, emotion=item.emotion
                         )
                         first = False
 
@@ -308,6 +318,8 @@ class TTSPipelineMixin:
                         f"[TTS perf] first-chunk: {first_chunk_latency_ms:.1f}ms, "
                         f"total: {total_latency_ms:.1f}ms, RTF: {rtf:.3f}"
                     )
+
+                state.spoken_subtitle += item.text
 
             except asyncio.CancelledError:
                 # 打断：TTS 被取消，立即停止音频播放

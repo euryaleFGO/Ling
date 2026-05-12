@@ -45,14 +45,23 @@ class VADConfig:
     # 后端: "rms" 或 "silero"
     backend: Literal["rms", "silero"] = "rms"
     
-    # 静音持续多久认为说完（秒）
-    silence_duration: float = 0.6
+    # 静音持续多久认为说完（秒）；过短易在「听|得到」等字间换气处提前切段
+    silence_duration: float = 0.92
     
     # 最少连续 N 个语音块才认为「真正开始说话」（防误触发）
     min_speech_chunks: int = 1
     
     # 语音结束后再多录 N 个块（防止截断尾音）
     hangover_chunks: int = 1
+
+    # 已达到「静音够长可判停」后，再继续收录的时长（秒）。
+    # 句尾语气词（吗、呢、吧）能量常低于阈值，会落在静音计时里；不缓冲易被切到下一句 ASR。
+    endpoint_tail_padding_sec: float = 0.56
+
+    # 已收录语音时长（按采样累计）仍低于该值时，判停需用 mid_utterance_silence_sec 与 silence_duration 的较大者，
+    # 减轻中文句中短停顿（如「今天的新」与「闻吧」之间）被切成两句、尾字并进下一句 ASR 的问题。
+    min_voice_accum_sec_for_fast_endpoint: float = 2.35
+    mid_utterance_silence_sec: float = 1.06
     
     # 预缓冲块数（语音开始时回溯，防止开头吃字）
     pre_buffer_chunks: int = 2
@@ -69,22 +78,31 @@ class VADConfig:
         """预设配置"""
         presets = {
             "aggressive": cls(
-                silence_duration=0.4,
+                silence_duration=0.52,
                 min_speech_chunks=1,
-                hangover_chunks=1,
-                pre_buffer_chunks=1,
+                hangover_chunks=2,
+                pre_buffer_chunks=2,
+                endpoint_tail_padding_sec=0.36,
+                min_voice_accum_sec_for_fast_endpoint=2.0,
+                mid_utterance_silence_sec=0.92,
             ),
             "balanced": cls(
-                silence_duration=0.6,
+                silence_duration=0.92,
                 min_speech_chunks=1,
-                hangover_chunks=1,
-                pre_buffer_chunks=2,
+                hangover_chunks=3,
+                pre_buffer_chunks=3,
+                endpoint_tail_padding_sec=0.56,
+                min_voice_accum_sec_for_fast_endpoint=2.45,
+                mid_utterance_silence_sec=1.08,
             ),
             "conservative": cls(
-                silence_duration=0.9,
+                silence_duration=1.05,
                 min_speech_chunks=2,
-                hangover_chunks=2,
+                hangover_chunks=4,
                 pre_buffer_chunks=3,
+                endpoint_tail_padding_sec=0.65,
+                min_voice_accum_sec_for_fast_endpoint=2.85,
+                mid_utterance_silence_sec=1.14,
             ),
         }
         return presets[name]
@@ -191,12 +209,12 @@ class SileroVADBackend(VADBackend):
             raise ValueError(f"Silero VAD requires 8kHz or 16kHz, got {sample_rate}")
         self._ensure_model()
         self._sample_rate = sample_rate
-        
+
         if audio_chunk.dtype == np.int16:
             audio = audio_chunk.astype(np.float32) / 32768.0
         else:
             audio = audio_chunk.astype(np.float32)
-        
+
         import torch
         t = torch.from_numpy(audio).float()
         with torch.no_grad():
@@ -204,6 +222,15 @@ class SileroVADBackend(VADBackend):
         # 可能是标量或 1D tensor（每 512 样本一个概率）
         p = float(prob.max() if hasattr(prob, "dim") and prob.dim() > 0 else prob)
         return p > self.config.silero_threshold
+
+    def reset(self):
+        """重置 Silero VAD RNN 隐藏状态，防止上一轮语音残留影响下一轮检测。"""
+        if self._model is not None:
+            try:
+                self._model.reset_states()
+                log.debug("[VAD/Silero] RNN 状态已重置")
+            except Exception as e:
+                log.debug(f"[VAD/Silero] reset_states 失败: {e}")
 
 
 def create_vad(config: VADConfig) -> VADBackend:

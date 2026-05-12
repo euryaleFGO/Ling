@@ -143,6 +143,9 @@ class AsyncConversationManager(
         # Always create the queue so GUI chat input works in voice mode too
         self._user_text_queue: asyncio.Queue = asyncio.Queue()
         self._text_input_enabled: bool = self.config.general.use_text_input
+        # initialize() 较慢时 GUI 可能已发送文字，须在 run_async 进入后再灌入队列
+        self._preloop_user_text_lock = threading.Lock()
+        self._preloop_user_text_buffer: list[str] = []
 
         # 热更新待执行标志（event loop 内调度，无线程竞争）
         self._reload_pending: dict[str, bool] = {}
@@ -296,7 +299,7 @@ class AsyncConversationManager(
                 clean = new_clean
                 unspoken += delta
 
-                self._send_subtitle(clean, is_final=False, emotion=state.current_emotion)
+                # 字幕改由 TTS worker 按句与音频同步推送，避免 LLM 流式远快于播音
 
                 # Sentence splitting
                 while True:
@@ -326,8 +329,6 @@ class AsyncConversationManager(
                 f"clean={len(clean)} chars, unspoken={unspoken[:40]}..."
             )
 
-            self._send_subtitle(clean, is_final=True, emotion=state.current_emotion)
-
             if unspoken.strip():
                 state.sentences_queued += 1
                 await pending.put(
@@ -352,6 +353,7 @@ class AsyncConversationManager(
                 self._audio_input.stop_interrupt_detection()
 
             log.info(f"[{time.monotonic() - t0:.2f}s] All segments played")
+            self._send_subtitle(clean, is_final=True, emotion=state.current_emotion)
             self._set_state(ConversationState.IDLE)
 
             # TTS 播完后，检查是否有待处理的退出请求（exit_app 工具暂存的）
@@ -677,6 +679,17 @@ class AsyncConversationManager(
         self._running.set()
         self._loop = asyncio.get_running_loop()
 
+        with self._preloop_user_text_lock:
+            pending = self._preloop_user_text_buffer
+            self._preloop_user_text_buffer = []
+        for t in pending:
+            if t and t.strip():
+                self._user_text_queue.put_nowait(t.strip())
+        if pending:
+            log.info(
+                f"[conversation] 已将启动前缓冲的 {len(pending)} 条用户文字送入对话队列"
+            )
+
         # 启动会话轮转调度器（每天凌晨 4 点新开会话）
         self._start_session_scheduler()
 
@@ -701,14 +714,18 @@ class AsyncConversationManager(
                 except Exception as e:
                     log.warning(f"[conversation] Pending reload failed: {e}")
 
-                # 检查 exit_app 工具是否请求了退出
-                if exit_signal.is_exit_requested():
-                    reason = exit_signal.consume_exit_request()
-                    log.info(f"[conversation] exit_app requested: {reason}")
+                # 检查 exit_app 工具是否请求了退出（只 peek，不清除；由 Launcher 消费并 quit）
+                peek_reason = exit_signal.peek_exit_request()
+                if peek_reason is not None:
+                    log.info(
+                        f"[conversation] exit_app requested: {peek_reason or '(no reason)'}"
+                    )
                     break
 
                 try:
                     self._set_state(ConversationState.LISTENING)
+                    if self._asr:
+                        log.info("[ASR] 请讲话…（说完后稍停半秒，方便断句）")
                     user_text = await self._listen_and_recognize_async()
 
                     if not user_text:

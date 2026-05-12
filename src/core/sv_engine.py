@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import logging
 import os
+import base64
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -288,3 +290,67 @@ class SVEngine:
             return SVResult(accepted=score >= th, score=score, threshold=th, reason="cosine")
         except Exception as e:
             return SVResult(accepted=True, score=0.0, threshold=th, reason=f"fail_open:{type(e).__name__}")
+
+
+class RemoteSVEngine:
+    """远程声纹嵌入提取客户端（HTTP）。
+
+    接口与 SVEngine.embed() 兼容，可直接替换。
+    """
+
+    def __init__(self, base_url: str = "http://localhost:5003", timeout: int = 30):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self._session = None
+
+    def _ensure_session(self):
+        if self._session is not None: return
+        import requests
+        self._session = requests.Session()
+
+    def embed(self, audio: np.ndarray, sample_rate: int = 16000) -> np.ndarray:
+        self._ensure_session()
+        # 归一化为 float32
+        if isinstance(audio, np.ndarray):
+            if audio.dtype == np.int16:
+                audio_f32 = (audio.astype(np.float32) / 32768.0).reshape(-1)
+            else:
+                audio_f32 = audio.astype(np.float32).reshape(-1)
+                if float(np.max(np.abs(audio_f32))) > 2.0:
+                    audio_f32 = audio_f32 / 32768.0
+        else:
+            audio_f32 = np.asarray(audio, dtype=np.float32).reshape(-1)
+
+        audio_b64 = base64.b64encode(audio_f32.tobytes()).decode("ascii")
+
+        last_err = None
+        for attempt in range(3):
+            try:
+                resp = self._session.post(
+                    f"{self.base_url}/sv/embed",
+                    json={"audio": audio_b64, "sample_rate": sample_rate},
+                    timeout=self.timeout,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                emb_bytes = base64.b64decode(data["embedding"])
+                return np.frombuffer(emb_bytes, dtype=np.float32).copy()
+            except Exception as e:
+                last_err = e
+                if attempt < 2: time.sleep(0.5 * (attempt + 1))
+
+        logger.warning(f"[SV-Remote] retries failed: {last_err}")
+        raise RuntimeError(f"sv_remote_failed: {last_err}")
+
+    def health_check(self) -> bool:
+        self._ensure_session()
+        try:
+            resp = self._session.get(f"{self.base_url}/health", timeout=5)
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+    def close(self):
+        if self._session:
+            self._session.close()
+            self._session = None

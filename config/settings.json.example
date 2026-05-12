@@ -55,7 +55,8 @@
     "enable": true,
     "model_id": "",
     "device": "auto",
-    "min_audio_sec": 0.8
+    "min_audio_sec": 0.8,
+    "remote_url": ""
   },
   "sv": {
     "enable": false,
